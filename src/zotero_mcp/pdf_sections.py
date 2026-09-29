@@ -7,14 +7,25 @@ and from fixed-size page chunks when it does not.
 Rules (all pages are physical, 1-based):
 
 - Outline entries of level <= ``max_level`` are the boundaries, in page order.
-  Entry *i* spans its own start page to the page before entry *i+1* starts.
-  When the next entry starts on the same page, the two share that page.
+  Entry *i* spans its own start page to the start page of entry *i+1*,
+  inclusive: a section that ends part-way down a page shares that page with the
+  next one, so no text is lost. The last entry runs to the end of the scope.
 - Pages before the first entry form one ``front`` unit.
 - ``pages`` clips every unit to a range; units wholly outside it are dropped.
 - A unit longer than ``chunk_pages`` pages is split into near-equal ``split``
   parts. The larger parts come last.
-- With no outline, or no outline entry inside the scope, the scope is cut
-  into fixed ``chunk_pages``-page ``chunk`` units and ``source`` is ``chunks``.
+- With no outline entry of level <= ``max_level``, the scope is cut into fixed
+  ``chunk_pages``-page ``chunk`` units and ``source`` is ``chunks``. A scope
+  that lies inside one section is that section, clipped.
+
+``inventory`` lists the labels found on each unit's pages, as a hint list for a
+reader's "missing" pass. Two sources feed it: the layout detector's captions
+(``Figure N:`` / ``Table N.``, which it accepts only with a trailing ``:`` or
+``.``) and any text line that starts with ``Figure``, ``Fig.``, ``Table``,
+``Eq.`` or ``Equation`` and a number (``Figure 13-19 Title``, ``Fig. 3.1``).
+The line pattern also fires on in-text sentence starts such as ``Figure 13-20
+shows ...``. That over-inclusion is deliberate: the list is a hint, and an
+extra label costs a reader one glance where a missing one costs a fact.
 
 The outline is read through ``tools.write._extract_pdf_toc``, which runs
 ``get_toc()`` in a throwaway child process: on some PDFs it segfaults (#372),
@@ -31,6 +42,9 @@ logger = logging.getLogger(__name__)
 _UNTITLED = "(untitled)"
 _FRONT_TITLE = "Front matter"
 _TABLE_LABEL_RE = re.compile(r"\btab", re.IGNORECASE)
+# A label at the start of a text line: "Figure 13-19 Title", "Fig. 3.1", "Table 2".
+_LINE_LABEL_RE = re.compile(r"^(Figure|Fig\.|Table|Eq\.|Equation)\s+\d+([-.]\d+)?")
+_EQ_NAME_RE = re.compile(r"^(?:Eq\.|Equation)\s+(\d+(?:[-.]\d+)?)$")
 
 
 def sections_for_pdf(
@@ -52,8 +66,9 @@ def sections_for_pdf(
         max_level: Deepest outline level that starts a unit.
         chunk_pages: Longest unit, in pages. Longer units are split; a PDF with
             no usable outline is cut into chunks of this size.
-        inventory: Also list, per unit, the table and figure captions and the
-            display equations found on its pages.
+        inventory: Also list, per unit, the table and figure labels and the
+            display equations found on its pages (a hint list; it can
+            include in-text mentions that start a line).
 
     Returns:
         ``{key, attachment_key, title, page_count, source, scope, sections}``
@@ -83,7 +98,7 @@ def sections_for_pdf(
         entries = _outline_entries(_read_outline(str(pdf_path)), max_level, page_count)
         source = "outline"
         units: list[dict] = []
-        if any(first <= entry["page"] <= last for entry in entries):
+        if entries:  # the units tile every page, so some unit always reaches the scope
             for unit in _outline_units(entries, page_count):
                 clipped = _clip(unit, first, last)
                 if clipped is not None:
@@ -227,7 +242,12 @@ def _outline_entries(toc: list, max_level: int, page_count: int) -> list[dict]:
 
 
 def _outline_units(entries: list[dict], page_count: int) -> list[dict]:
-    """One unit per entry, plus a front unit for the pages before the first."""
+    """One unit per entry, plus a front unit for the pages before the first.
+
+    Entry *i* ends on the page entry *i+1* starts on, so the two share that page
+    (a section can end part-way down a page). The last entry ends on the last
+    page; ``_clip`` cuts it to the scope.
+    """
     units: list[dict] = []
     if entries[0]["page"] > 1:
         units.append({
@@ -235,9 +255,7 @@ def _outline_units(entries: list[dict], page_count: int) -> list[dict]:
             "start": 1, "end": entries[0]["page"] - 1, "kind": "front",
         })
     for index, entry in enumerate(entries):
-        following = entries[index + 1]["page"] if index + 1 < len(entries) else page_count + 1
-        # A successor on the same page shares it; otherwise stop the page before.
-        end = following - 1 if following > entry["page"] else entry["page"]
+        end = entries[index + 1]["page"] if index + 1 < len(entries) else page_count
         units.append({
             "title": entry["title"], "path": entry["path"], "level": entry["level"],
             "start": entry["page"], "end": end, "kind": "outline",
@@ -306,9 +324,9 @@ def _inventory(doc, sections: list[dict]) -> list[dict]:
             if page not in scanned:
                 scanned[page] = _scan_page(doc, page)
             page_tables, page_figures, page_equations, page_unnumbered = scanned[page]
-            _extend_unique(tables, page_tables)
-            _extend_unique(figures, page_figures)
-            _extend_unique(equations, page_equations)
+            _extend_unique(tables, page_tables, "tables")
+            _extend_unique(figures, page_figures, "figures")
+            _extend_unique(equations, page_equations, "equations")
             unnumbered += page_unnumbered
         rows.append({
             "section_id": section["id"],
@@ -320,14 +338,54 @@ def _inventory(doc, sections: list[dict]) -> list[dict]:
     return rows
 
 
-def _extend_unique(target: list[str], items: list[str]) -> None:
+def _label_key(label: str, kind: str) -> str:
+    """Comparison key so ``Fig. 3``, ``figure 3`` and ``Figure 3`` list once.
+
+    A line label ``Eq. 3`` or ``Equation 3`` keys as ``(3)``, the form the math
+    scan gives, so the two list once. Other equation labels keep their own text,
+    so ``(1a)`` and ``(1b)`` stay apart.
+    """
+    if kind == "equations":
+        named = _EQ_NAME_RE.match(label)
+        return f"({named.group(1)})" if named else "".join(label.split())
+    text = " ".join(label.lower().split())
+    return re.sub(r"^fig\.?(?=\s)", "figure", text)
+
+
+def _extend_unique(target: list[str], items: list[str], kind: str) -> None:
+    """Append the items whose key is not in ``target`` yet, in order."""
+    seen = {_label_key(item, kind) for item in target}
     for item in items:
-        if item not in target:
+        key = _label_key(item, kind)
+        if key not in seen:
+            seen.add(key)
             target.append(item)
 
 
+def _line_labels(page) -> dict[str, list[str]]:
+    """Labels that start a text line: ``{tables, figures, equations}``."""
+    found: dict[str, list[str]] = {"tables": [], "figures": [], "equations": []}
+    for line in page.get_text("text").splitlines():
+        match = _LINE_LABEL_RE.match(line.strip())
+        if not match:
+            continue
+        label = " ".join(match.group(0).split())
+        if label.startswith("Table"):
+            kind = "tables"
+        elif label.startswith("Eq"):
+            kind = "equations"
+        else:
+            kind = "figures"
+        _extend_unique(found[kind], [label], kind)
+    return found
+
+
 def _scan_page(doc, page_num: int) -> tuple[list[str], list[str], list[str], int]:
-    """(table labels, figure labels, equation labels, unnumbered equation count)."""
+    """(table labels, figure labels, equation labels, unnumbered equation count).
+
+    Layout captions and equation labels come first; labels found at the start
+    of a text line are added when the layout pass did not already list them.
+    """
     from zotero_mcp.pdf_layout import detect_page_regions, scan_math
 
     tables: list[str] = []
@@ -341,11 +399,23 @@ def _scan_page(doc, page_num: int) -> tuple[list[str], list[str], list[str], int
         # Display equations come from scan_math below, with their own labels.
         if not label or region.get("source") == "equation":
             continue
-        _extend_unique(tables if _TABLE_LABEL_RE.search(label) else figures, [label])
+        if _TABLE_LABEL_RE.search(label):
+            _extend_unique(tables, [label], "tables")
+        else:
+            _extend_unique(figures, [label], "figures")
 
     try:
         equations, _inline = scan_math(doc[page_num - 1])
     except Exception:
         equations = []
     labels = [equation["label"] for equation in equations if equation["label"]]
-    return tables, figures, labels, len(equations) - len(labels)
+    unnumbered = len(equations) - len(labels)
+
+    try:
+        by_line = _line_labels(doc[page_num - 1])
+    except Exception:
+        by_line = {"tables": [], "figures": [], "equations": []}
+    _extend_unique(tables, by_line["tables"], "tables")
+    _extend_unique(figures, by_line["figures"], "figures")
+    _extend_unique(labels, by_line["equations"], "equations")
+    return tables, figures, labels, unnumbered

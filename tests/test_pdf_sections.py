@@ -48,10 +48,10 @@ class TestOutlineUnits:
         assert [(s["id"], s["path"], s["level"], s["start_page"], s["end_page"], s["kind"])
                 for s in result["sections"]] == [
             ("S01", "Front matter", 0, 1, 1, "front"),
-            ("S02", "Intro", 1, 2, 2, "outline"),
-            ("S03", "Intro > Background", 2, 3, 4, "outline"),
-            ("S04", "Intro > Aim", 2, 5, 6, "outline"),
-            ("S05", "Method", 1, 7, 7, "outline"),
+            ("S02", "Intro", 1, 2, 3, "outline"),
+            ("S03", "Intro > Background", 2, 3, 5, "outline"),
+            ("S04", "Intro > Aim", 2, 5, 7, "outline"),
+            ("S05", "Method", 1, 7, 8, "outline"),
             ("S06", "Method > Rig", 2, 8, 10, "outline"),
         ]
         assert result["sections"][2]["title"] == "Background"
@@ -63,7 +63,7 @@ class TestOutlineUnits:
 
         assert [(s["path"], s["start_page"], s["end_page"]) for s in result["sections"]] == [
             ("Front matter", 1, 1),
-            ("Intro", 2, 6),
+            ("Intro", 2, 7),
             ("Method", 7, 10),
         ]
 
@@ -72,7 +72,7 @@ class TestOutlineUnits:
 
         result = pdf_sections.sections_for_pdf(path)
 
-        assert spans(result) == [(1, 2, "outline"), (3, 4, "outline")]
+        assert spans(result) == [(1, 3, "outline"), (3, 4, "outline")]
         assert all(s["kind"] != "front" for s in result["sections"])
 
     def test_front_unit_covers_every_page_before_the_first_entry(self, tmp_path):
@@ -94,8 +94,33 @@ class TestOutlineUnits:
             ("Front matter", 1, 1),
             ("A", 2, 2),
             ("B", 2, 2),
-            ("C", 2, 4),
+            ("C", 2, 5),
             ("D", 5, 8),
+        ]
+
+    def test_a_section_shares_its_last_page_with_the_next_one(self, tmp_path):
+        """A section that ends part-way down a page shares it, so no text is lost."""
+        path = make_pdf(tmp_path, 12, [[1, "One", 3], [1, "Two", 6], [1, "Three", 10]])
+
+        result = pdf_sections.sections_for_pdf(path)
+
+        assert [(s["title"], s["start_page"], s["end_page"]) for s in result["sections"]] == [
+            ("Front matter", 1, 2),
+            ("One", 3, 6),
+            ("Two", 6, 10),
+            ("Three", 10, 12),
+        ]
+
+    def test_the_last_entry_runs_to_the_end_of_the_scope(self, tmp_path):
+        path = make_pdf(tmp_path, 12, [[1, "One", 3], [1, "Last", 6]])
+
+        whole = pdf_sections.sections_for_pdf(path)
+        clipped = pdf_sections.sections_for_pdf(path, pages=(4, 9))
+
+        assert whole["sections"][-1]["end_page"] == 12
+        assert [(s["title"], s["start_page"], s["end_page"]) for s in clipped["sections"]] == [
+            ("One", 4, 6),
+            ("Last", 6, 9),
         ]
 
     def test_ids_are_sequential_in_page_order(self, tmp_path):
@@ -150,7 +175,7 @@ class TestOutlineRows:
 
         assert [(s["title"], s["start_page"], s["end_page"]) for s in result["sections"]] == [
             ("Front matter", 1, 1),
-            ("Early", 2, 5),
+            ("Early", 2, 6),
             ("Late", 6, 9),
         ]
 
@@ -161,7 +186,7 @@ class TestOutlineRows:
 
         assert [(s["path"], s["start_page"], s["end_page"]) for s in result["sections"]] == [
             ("Front matter", 1, 2),
-            ("Part > Child", 3, 4),
+            ("Part > Child", 3, 5),
             ("Last", 5, 8),
         ]
 
@@ -188,9 +213,9 @@ class TestClipping:
 
         assert result["scope"] == [4, 8]
         assert [(s["path"], s["start_page"], s["end_page"]) for s in result["sections"]] == [
-            ("Intro > Background", 4, 4),
-            ("Intro > Aim", 5, 6),
-            ("Method", 7, 7),
+            ("Intro > Background", 4, 5),
+            ("Intro > Aim", 5, 7),
+            ("Method", 7, 8),
             ("Method > Rig", 8, 8),
         ]
         assert [s["id"] for s in result["sections"]] == ["S01", "S02", "S03", "S04"]
@@ -210,7 +235,8 @@ class TestClipping:
 
         assert result["scope"] == [7, 10]
         assert [(s["path"], s["start_page"], s["end_page"]) for s in result["sections"]] == [
-            ("Method", 7, 7),
+            ("Intro > Aim", 7, 7),
+            ("Method", 7, 8),
             ("Method > Rig", 8, 10),
         ]
 
@@ -260,22 +286,35 @@ class TestSplitting:
         result = pdf_sections.sections_for_pdf(path, chunk_pages=5)
 
         assert [(s["id"], s["start_page"], s["end_page"], s["kind"]) for s in result["sections"]] == [
-            ("S01", 1, 1, "outline"),
-            ("S02", 2, 5, "split"),
-            ("S03", 6, 10, "split"),
+            ("S01", 1, 2, "outline"),
+            ("S02", 2, 6, "split"),
+            ("S03", 7, 11, "split"),
             ("S04", 11, 12, "outline"),
         ]
 
     def test_the_split_is_sized_on_the_clipped_unit(self, tmp_path):
-        """Unclipped, "Long" is 19 pages (three parts at a limit of 8); clipped it is 10 (two)."""
+        """Unclipped, "Long" is 20 pages (three parts at a limit of 8); clipped it is 11 (two)."""
         path = make_pdf(tmp_path, 25, [[1, "Long", 1], [1, "Next", 20]])
 
         result = pdf_sections.sections_for_pdf(path, pages=(10, 25), chunk_pages=8)
 
         assert [(s["title"], s["start_page"], s["end_page"], s["kind"]) for s in result["sections"]] == [
             ("Long (part 1/2)", 10, 14, "split"),
-            ("Long (part 2/2)", 15, 19, "split"),
+            ("Long (part 2/2)", 15, 20, "split"),
             ("Next", 20, 25, "outline"),
+        ]
+
+    def test_a_section_running_to_the_next_start_page_splits_on_that_length(self, tmp_path):
+        """Nine pages inclusive (6-14) is two parts, 6-9 and 10-14; eight would not split."""
+        path = make_pdf(tmp_path, 15, [[1, "Intro", 1], [1, "Results", 6], [1, "Conclusions", 14]])
+
+        result = pdf_sections.sections_for_pdf(path, max_level=1)
+
+        assert [(s["title"], s["start_page"], s["end_page"], s["kind"]) for s in result["sections"]] == [
+            ("Intro", 1, 6, "outline"),
+            ("Results (part 1/2)", 6, 9, "split"),
+            ("Results (part 2/2)", 10, 14, "split"),
+            ("Conclusions", 14, 15, "outline"),
         ]
 
     def test_the_front_unit_splits_like_any_other(self, tmp_path):
@@ -320,13 +359,26 @@ class TestChunks:
         assert result["scope"] == [5, 12]
         assert spans(result) == [(5, 9, "chunk"), (10, 12, "chunk")]
 
-    def test_an_outline_with_no_entry_in_the_scope_gives_chunks(self, tmp_path):
+    def test_a_scope_inside_one_section_is_that_section_clipped(self, tmp_path):
+        """No entry starts in pages 5-12, but "Early" (2-18) covers them: not chunks."""
         path = make_pdf(tmp_path, 20, [[1, "Early", 2], [1, "Late", 18]])
 
         result = pdf_sections.sections_for_pdf(path, pages=(5, 12), chunk_pages=4)
 
-        assert result["source"] == "chunks"
-        assert spans(result) == [(5, 8, "chunk"), (9, 12, "chunk")]
+        assert result["source"] == "outline"
+        assert [(s["title"], s["start_page"], s["end_page"], s["kind"]) for s in result["sections"]] == [
+            ("Early (part 1/2)", 5, 8, "split"),
+            ("Early (part 2/2)", 9, 12, "split"),
+        ]
+
+    def test_a_scope_inside_one_short_section_is_a_single_outline_unit(self, tmp_path):
+        path = make_pdf(tmp_path, 20, [[1, "Early", 2], [1, "Late", 18]])
+
+        result = pdf_sections.sections_for_pdf(path, pages=(5, 7))
+
+        assert result["source"] == "outline"
+        assert spans(result) == [(5, 7, "outline")]
+        assert result["sections"][0]["title"] == "Early"
 
     def test_entries_deeper_than_max_level_alone_give_chunks(self, tmp_path, monkeypatch):
         monkeypatch.setattr(pdf_sections, "_read_outline", lambda _path: [[2, "Sub", 3]])
@@ -375,16 +427,42 @@ def add_figure_page(doc):
     return page
 
 
+def add_line_caption_page(doc):
+    """Pages set the way Boyce's handbook is: caption lines with no colon or period.
+
+    "Figure 13-19 Title" has no separator, so the layout detector's caption
+    pattern skips it. The page also has an in-text line that starts the same way.
+    """
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "Caption page", fontsize=12)
+    page.insert_text((72, 150), "Figure 13-19 Thrust-bearing temperature characteristics.", fontsize=10)
+    page.insert_text((72, 200), "Figure 13-20 shows the typical power consumption.", fontsize=10)
+    page.insert_text((72, 250), "Table 13-4 Seal materials.", fontsize=10)
+    page.insert_text((72, 300), "Fig. 3.1 A dotted number.", fontsize=10)
+    page.insert_text((72, 350), "Equation 7 gives the leakage.", fontsize=10)
+    page.insert_text((72, 400), "See Figure 9 in the text, not a line start.", fontsize=10)
+    return page
+
+
+def with_outline(path, toc, tmp_path, name):
+    """Copy of ``path`` carrying ``toc`` as its outline."""
+    doc = pymupdf.open(path)
+    doc.set_toc(toc)
+    out = str(tmp_path / name)
+    doc.save(out)
+    doc.close()
+    return out
+
+
 @pytest.fixture
 def inventory_pdf(tmp_path):
-    """Pages 1 plain, 2 table, 3 equations, 4 figure; one section per page."""
+    """Pages 1 plain, 2 table, 3 equations, 4 figure. No outline."""
     doc = pymupdf.open()
     plain = doc.new_page(width=612, height=792)
     plain.insert_text((72, 72), "Plain page", fontsize=12)
     add_table_page(doc)
     add_math_page(doc)
     add_figure_page(doc)
-    doc.set_toc([[1, "Plain", 1], [1, "Tables", 2], [1, "Maths", 3], [1, "Figures", 4]])
     path = str(tmp_path / "inventory.pdf")
     doc.save(path)
     doc.close()
@@ -393,9 +471,10 @@ def inventory_pdf(tmp_path):
 
 class TestInventory:
     def test_lists_table_caption_equation_label_and_unnumbered_count(self, inventory_pdf):
-        result = pdf_sections.sections_for_pdf(inventory_pdf, inventory=True)
+        """One page per unit (page chunks), so each row holds one page's labels."""
+        result = pdf_sections.sections_for_pdf(inventory_pdf, chunk_pages=1, inventory=True)
 
-        assert [s["path"] for s in result["sections"]] == ["Plain", "Tables", "Maths", "Figures"]
+        assert result["source"] == "chunks"
         assert result["inventory"] == [
             {"section_id": "S01", "tables": [], "figures": [], "equations": [], "unnumbered_equations": 0},
             {"section_id": "S02", "tables": ["Table 1"], "figures": [], "equations": [],
@@ -407,11 +486,7 @@ class TestInventory:
         ]
 
     def test_a_section_over_several_pages_pools_their_labels(self, inventory_pdf, tmp_path):
-        doc = pymupdf.open(inventory_pdf)
-        doc.set_toc([[1, "All", 1]])
-        pooled = str(tmp_path / "pooled.pdf")
-        doc.save(pooled)
-        doc.close()
+        pooled = with_outline(inventory_pdf, [[1, "All", 1]], tmp_path, "pooled.pdf")
 
         result = pdf_sections.sections_for_pdf(pooled, inventory=True)
 
@@ -422,11 +497,7 @@ class TestInventory:
         }]
 
     def test_a_page_shared_by_two_sections_is_listed_under_both(self, inventory_pdf, tmp_path):
-        doc = pymupdf.open(inventory_pdf)
-        doc.set_toc([[1, "First", 2], [1, "Second", 2]])
-        shared = str(tmp_path / "shared.pdf")
-        doc.save(shared)
-        doc.close()
+        shared = with_outline(inventory_pdf, [[1, "First", 2], [1, "Second", 2]], tmp_path, "shared.pdf")
 
         result = pdf_sections.sections_for_pdf(shared, pages=(2, 2), inventory=True)
 
@@ -435,14 +506,38 @@ class TestInventory:
         ]
         assert [row["tables"] for row in result["inventory"]] == [["Table 1"], ["Table 1"]]
 
-    def test_inventory_follows_a_split_and_the_chunks(self, inventory_pdf):
-        result = pdf_sections.sections_for_pdf(inventory_pdf, pages=(2, 4), chunk_pages=2, inventory=True)
+    def test_the_next_sections_first_page_is_scanned_for_the_section_before(self, inventory_pdf, tmp_path):
+        """Under the shared-page rule "Plain" spans pages 1-2, so it lists page 2's table."""
+        path = with_outline(inventory_pdf, [[1, "Plain", 1], [1, "Tables", 2]], tmp_path, "adjacent.pdf")
 
-        # The "Tables" (p2), "Maths" (p3) and "Figures" (p4) entries are one page each.
-        assert [row["section_id"] for row in result["inventory"]] == ["S01", "S02", "S03"]
+        result = pdf_sections.sections_for_pdf(path, inventory=True)
+
+        assert [(s["path"], s["start_page"], s["end_page"]) for s in result["sections"]] == [
+            ("Plain", 1, 2), ("Tables", 2, 4),
+        ]
+        assert [row["tables"] for row in result["inventory"]] == [["Table 1"], ["Table 1"]]
+        assert result["inventory"][1]["equations"] == ["(3)"]
+        assert result["inventory"][1]["figures"] == ["Figure 2"]
+
+    def test_inventory_follows_a_split(self, inventory_pdf, tmp_path):
+        path = with_outline(inventory_pdf, [[1, "All", 1]], tmp_path, "split.pdf")
+
+        result = pdf_sections.sections_for_pdf(path, pages=(2, 4), chunk_pages=2, inventory=True)
+
+        assert [(s["id"], s["start_page"], s["end_page"], s["kind"]) for s in result["sections"]] == [
+            ("S01", 2, 2, "split"), ("S02", 3, 4, "split"),
+        ]
         assert result["inventory"][0]["tables"] == ["Table 1"]
         assert result["inventory"][1]["equations"] == ["(3)"]
-        assert result["inventory"][2]["figures"] == ["Figure 2"]
+        assert result["inventory"][1]["figures"] == ["Figure 2"]
+
+    def test_inventory_follows_the_chunks(self, inventory_pdf):
+        result = pdf_sections.sections_for_pdf(inventory_pdf, pages=(2, 4), chunk_pages=2, inventory=True)
+
+        assert [row["section_id"] for row in result["inventory"]] == ["S01", "S02"]
+        assert result["inventory"][0]["tables"] == ["Table 1"]
+        assert result["inventory"][0]["equations"] == ["(3)"]
+        assert result["inventory"][1]["figures"] == ["Figure 2"]
 
     def test_a_page_that_fails_to_scan_counts_as_empty(self, inventory_pdf, monkeypatch):
         from zotero_mcp import pdf_layout
@@ -452,26 +547,118 @@ class TestInventory:
 
         monkeypatch.setattr(pdf_layout, "detect_page_regions", boom)
         monkeypatch.setattr(pdf_layout, "scan_math", boom)
+        monkeypatch.setattr(pdf_sections, "_line_labels", boom)
 
         result = pdf_sections.sections_for_pdf(inventory_pdf, inventory=True)
 
-        assert all(not row["tables"] and not row["equations"] and row["unnumbered_equations"] == 0
-                   for row in result["inventory"])
+        assert result["inventory"] == [
+            {"section_id": "S01", "tables": [], "figures": [], "equations": [], "unnumbered_equations": 0}
+        ]
+
+    def test_a_failed_layout_scan_still_lists_the_line_labels(self, inventory_pdf, monkeypatch):
+        from zotero_mcp import pdf_layout
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("scan failed")
+
+        monkeypatch.setattr(pdf_layout, "detect_page_regions", boom)
+        monkeypatch.setattr(pdf_layout, "scan_math", boom)
+
+        row = pdf_sections.sections_for_pdf(inventory_pdf, inventory=True)["inventory"][0]
+
+        assert row["tables"] == ["Table 1"]
+        assert row["figures"] == ["Figure 2"]
+
+
+class TestLineLabels:
+    """Captions with no colon or period ("Figure 13-19 Title") come from the line pattern."""
+
+    @pytest.fixture
+    def caption_pdf(self, tmp_path):
+        doc = pymupdf.open()
+        add_line_caption_page(doc)
+        path = str(tmp_path / "captions.pdf")
+        doc.save(path)
+        doc.close()
+        return path
+
+    def test_the_layout_pattern_alone_misses_a_boyce_style_caption(self, caption_pdf):
+        """Pins why the second pattern exists: the layout detector skips "Figure 13-19 Title"."""
+        from zotero_mcp.pdf_layout import _parse_caption_block
+
+        assert _parse_caption_block("Figure 13-19 Thrust-bearing temperature characteristics.") is None
+
+    def test_a_boyce_style_caption_is_listed(self, caption_pdf):
+        result = pdf_sections.sections_for_pdf(caption_pdf, inventory=True)
+
+        row = result["inventory"][0]
+        assert "Figure 13-19" in row["figures"]
+        assert "Table 13-4" in row["tables"]
+        assert "Fig. 3.1" in row["figures"]
+
+    def test_in_text_line_starts_are_included_and_mid_line_mentions_are_not(self, caption_pdf):
+        """Over-inclusion is accepted: "Figure 13-20 shows ..." starts a line, so it is listed."""
+        row = pdf_sections.sections_for_pdf(caption_pdf, inventory=True)["inventory"][0]
+
+        assert "Figure 13-20" in row["figures"]
+        assert "Figure 9" not in row["figures"]
+
+    def test_equation_words_list_under_equations(self, caption_pdf):
+        row = pdf_sections.sections_for_pdf(caption_pdf, inventory=True)["inventory"][0]
+
+        assert row["equations"] == ["Equation 7"]
+
+    def test_a_label_the_layout_pass_already_found_is_listed_once(self, inventory_pdf):
+        """The pages carry "Table 1: ..." and "Figure 2: ...": both patterns see them."""
+        rows = pdf_sections.sections_for_pdf(inventory_pdf, chunk_pages=4, inventory=True)["inventory"]
+
+        assert rows[0]["tables"] == ["Table 1"]
+        assert rows[0]["figures"] == ["Figure 2"]
+
+    @pytest.mark.parametrize("left, right, kind", [
+        ("Fig. 3", "Figure 3", "figures"),
+        ("figure 3", "Figure 3", "figures"),
+        ("Eq. 3", "(3)", "equations"),
+        ("Equation 3", "Eq. 3", "equations"),
+    ])
+    def test_spellings_of_one_label_compare_equal(self, left, right, kind):
+        assert pdf_sections._label_key(left, kind) == pdf_sections._label_key(right, kind)
+
+    def test_lettered_equation_labels_stay_apart(self):
+        target: list[str] = []
+        pdf_sections._extend_unique(target, ["(1a)", "(1b)", "(1a)"], "equations")
+
+        assert target == ["(1a)", "(1b)"]
+
+    def test_a_page_that_fails_the_line_scan_still_lists_its_layout_labels(self, inventory_pdf, monkeypatch):
+        def boom(_page):
+            raise RuntimeError("no text")
+
+        monkeypatch.setattr(pdf_sections, "_line_labels", boom)
+
+        rows = pdf_sections.sections_for_pdf(inventory_pdf, chunk_pages=4, inventory=True)["inventory"]
+
+        assert rows[0]["tables"] == ["Table 1"]
+        assert rows[0]["figures"] == ["Figure 2"]
 
 
 class TestMarkdown:
-    def test_renders_header_sections_and_inventory(self, inventory_pdf):
-        data = pdf_sections.sections_for_pdf(inventory_pdf, inventory=True)
+    def test_renders_header_sections_and_inventory(self, inventory_pdf, tmp_path):
+        path = with_outline(
+            inventory_pdf, [[1, "Plain", 1], [1, "Tables", 2], [1, "Maths", 3], [1, "Figures", 4]],
+            tmp_path, "markdown.pdf",
+        )
+        data = pdf_sections.sections_for_pdf(path, inventory=True)
         data.update(key="ABCD1234", attachment_key="EFGH5678", title="A Test Paper")
 
         markdown = pdf_sections.format_sections_markdown(data)
 
         assert markdown.startswith("# A Test Paper\n")
         assert "Item `ABCD1234` · attachment `EFGH5678` · 4 pages · source: outline · scope: pages 1-4" in markdown
-        assert "| S02 | page 2 | 1 | outline | Tables |" in markdown
+        assert "| S02 | pages 2-3 | 1 | outline | Tables |" in markdown
         assert "## Inventory" in markdown
-        assert "| S02 | Table 1 | - | - | 0 |" in markdown
-        assert "| S03 | - | - | (3) | 1 |" in markdown
+        assert "| S01 | Table 1 | - | - | 0 |" in markdown
+        assert "| S03 | - | Figure 2 | (3) | 1 |" in markdown
         assert "| S04 | - | Figure 2 | - | 0 |" in markdown
 
     def test_without_inventory_or_caller_fields(self, tmp_path):
