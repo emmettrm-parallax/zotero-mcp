@@ -65,6 +65,36 @@ def big_index(n_facts: int, seed: int = 7) -> dict:
     return with_facts(index, facts)
 
 
+def wide_index(n_vocab: int, n_gaps: int, n_facts: int, meaning_len: int = 60, seed: int = 11) -> dict:
+    """A valid index with many vocabulary entries and gaps and few facts (the shape of a live glossary-heavy source)."""
+    rng = random.Random(seed)
+    index = with_facts(sample_index(), sample_index()["facts"][:n_facts])
+    words = ["film", "hole", "liner", "swirl", "mixing", "plenum", "jet", "wall", "flow", "µm"]
+    index["vocabulary"] = [
+        {"term": f"term {i} <x> & y", "kind": ("term", "symbol", "acronym", "unit")[i % 4],
+         "symbol": None if i % 4 else f"s{i}",
+         "meaning": " ".join(rng.choice(words) for _ in range(meaning_len // 5))[:meaning_len].ljust(meaning_len, "."),
+         "variants": [f"variant {i}a", f"variant {i}b"] if i % 3 == 0 else [],
+         "pages": [1 + i % 30]}
+        for i in range(n_vocab)
+    ]
+    index["gaps"] = [
+        {"id": f"G{i:04d}", "page": 1 + i % 30, "section_id": "S02" if i % 5 else None, "kind": "figure-values",
+         "note": f"Fig. {i} curves have no data labels; values cannot be read from text."}
+        for i in range(n_gaps)
+    ]
+    return index
+
+
+def block_of_parts(notes: list[str]) -> list[dict]:
+    """The decoded JSON slice of every part."""
+    out = []
+    for note in notes:
+        [block] = si._pre_blocks(note)
+        out.append(json.loads(block.split("\n", 1)[1]))
+    return out
+
+
 def note_editor(note_html: str, *, attrs: bool = False, br: bool = False, entities: bool = False) -> str:
     """What the Zotero note editor does to stored HTML, as far as the parser cares."""
     out = note_html
@@ -216,6 +246,16 @@ def test_render_layout_of_a_single_note():
     for label in ("<h2>Header</h2>", "<h2>Vocabulary</h2>", "<h2>Sections</h2>", "<h2>Facts</h2>",
                   "<h2>Tables and figures</h2>", "<h2>Equations</h2>", "<h2>Gaps</h2>"):
         assert label in note
+    assert set(json.loads(line2)) == set(si.TOP_LEVEL_KEYS)
+
+
+def test_vocabulary_and_gap_tables_are_compact():
+    note = si.render_index_notes(small_index(3))[0]
+    assert "<h2>Vocabulary</h2><table><tbody><tr><th>term</th><th>kind</th><th>meaning</th></tr>" in note
+    assert "<h2>Gaps</h2><table><tbody><tr><th>page</th><th>kind</th><th>note</th></tr>" in note
+    # variants are joined by ", " into the meaning cell
+    assert "(also: full-coverage film cooling, effusion)</td>" in note
+    assert "see data block" not in note
 
 
 def test_round_trip_three_facts():
@@ -248,24 +288,112 @@ def test_round_trip_2000_facts_in_several_parts(big):
     assert si.parse_index_notes(notes) == index
 
 
-def test_parts_are_titled_and_hold_only_facts_after_the_first(big):
+def test_parts_are_titled_and_only_part_one_holds_header_and_sections(big):
     index, notes = big
     n = len(notes)
     assert notes[0].startswith("<h1>Source index</h1>")
     seen_ids = []
-    for k, note in enumerate(notes, start=1):
+    for k, (note, data) in enumerate(zip(notes, block_of_parts(notes)), start=1):
         if k > 1:
             assert note.startswith(f"<h1>Source index (part {k} of {n})</h1>")
-            assert "<h2>Header</h2>" not in note and "<h2>Vocabulary</h2>" not in note
-        block = si._pre_blocks(note)
-        assert len(block) == 1
-        line1, payload = block[0].split("\n")
-        assert line1 == f"source-index/v1 part {k}/{n} build {index['header']['build_id']}"
-        data = json.loads(payload)
-        assert set(data) == (set(index) if k == 1 else {"facts"})
+            assert "<h2>Header</h2>" not in note and "<h2>Sections</h2>" not in note
+            assert data["header"] == {} and data["sections"] == []
+        else:
+            assert data["header"] == index["header"] and data["sections"] == index["sections"]
+        [block] = si._pre_blocks(note)
+        assert block.split("\n")[0] == f"source-index/v1 part {k}/{n} build {index['header']['build_id']}"
+        assert set(data) == set(si.TOP_LEVEL_KEYS)
         seen_ids += [f["id"] for f in data["facts"]]
     # every fact exactly once, in order: no fact split or repeated across parts
     assert seen_ids == [f["id"] for f in index["facts"]]
+
+
+def test_round_trip_2000_vocabulary_500_gaps_3_facts():
+    index = wide_index(2000, 500, 3, meaning_len=150)
+    notes = si.render_index_notes(index)
+    assert len(notes) >= 2
+    assert all(len(n) <= si.DEFAULT_MAX_CHARS for n in notes)
+    assert si.parse_index_notes(notes) == index
+    slices = block_of_parts(notes)
+    assert sum(1 for s in slices if s["vocabulary"]) >= 2        # the glossary spans parts
+    for name in ("vocabulary", "gaps", "facts"):                  # each entry once, in order
+        joined = [e.get("id") or e.get("term") for s in slices for e in s[name]]
+        assert joined == [e.get("id") or e.get("term") for e in index[name]]
+
+
+def test_live_shaped_index_fits_part_one():
+    """3 facts, 450 vocabulary entries of about 200 characters and 90 gaps: part 1 alone used to overflow."""
+    index = wide_index(450, 90, 3, meaning_len=200)
+    notes = si.render_index_notes(index, max_chars=190_000)
+    assert all(len(n) <= 190_000 for n in notes)
+    assert si.parse_index_notes(notes) == index
+    # the tables are no bigger than the data they show
+    for note in notes:
+        view = note.split("</p>", 1)[1].rsplit("<pre>", 1)[0]
+        assert len(view) <= 1.5 * len(note.rsplit("<pre>", 1)[1])
+
+
+def test_every_packed_block_can_span_parts_in_pack_order():
+    index = wide_index(120, 90, 3, meaning_len=150)
+    index["tables_figures"] = [
+        dict(index["tables_figures"][0], id=f"T{i:03d}", caption="c" * 300) for i in range(60)
+    ] + index["tables_figures"][1:]
+    index["equations"] = [dict(index["equations"][0], id=f"E{i:03d}") for i in range(60)]
+    notes = si.render_index_notes(index, max_chars=20_000)
+    assert all(len(n) <= 20_000 for n in notes)
+    assert si.parse_index_notes(notes) == index
+    slices = block_of_parts(notes)
+    order = ("tables_figures", "equations", "vocabulary", "gaps", "facts")
+    for name in order[:4]:
+        assert sum(1 for s in slices if s[name]) >= 2, name
+    # greedy fill: the last block of a part never comes after the first block of the next part
+    used = [[order.index(name) for name in order if s[name]] for s in slices]
+    used = [u for u in used if u]
+    assert all(a[-1] <= b[0] for a, b in zip(used, used[1:]))
+
+
+def test_tables_are_dropped_when_they_would_outgrow_the_data():
+    """Bare facts: each row is mostly markup, so the tables would be several times the JSON."""
+    index = small_index(0)
+    index["facts"] = [{"id": f"F{i:04d}", "page": 1 + i % 30, "section_id": "S01"} for i in range(200)]
+    notes = si.render_index_notes(index)
+    assert len(notes) == 1
+    assert "<h2>Facts</h2><p>200 entries, see data block.</p>" in notes[0]
+    assert "<h2>Facts</h2><table>" not in notes[0]
+    assert si.parse_index_notes(notes) == index
+
+
+def test_tables_are_dropped_when_one_entry_would_not_fit_a_part_with_them():
+    index = small_index(3)
+    index["facts"][1]["statement"] = "x" * 20_000        # its row and its JSON together are over one part
+    notes = si.render_index_notes(index, max_chars=30_000)
+    assert all(len(n) <= 30_000 for n in notes)
+    assert si.parse_index_notes(notes) == index
+    slices = block_of_parts(notes)
+    [huge] = [k for k, s in enumerate(slices) if any(f["id"] == index["facts"][1]["id"] for f in s["facts"])]
+    assert "<h2>Facts</h2><p>" in notes[huge] and "entries, see data block.</p>" in notes[huge]
+    assert "<table>" not in notes[huge].split("<h2>Facts</h2>", 1)[1]
+    # a part that still has room keeps its tables
+    assert "<h2>Facts</h2><table>" in notes[0] or "<h2>Vocabulary</h2><table>" in notes[0]
+
+
+def test_sections_table_is_dropped_before_part_one_is_given_up():
+    index = small_index(0)
+    index["vocabulary"] = index["tables_figures"] = index["equations"] = index["gaps"] = []
+    index["sections"] = [
+        {"id": f"S{i:02d}", "title": "t" * 100, "path": str(i), "level": 1, "start_page": 1, "end_page": 30}
+        for i in range(1, 60)
+    ]
+    with_tables = si.render_index_notes(index)
+    assert len(with_tables) == 1 and "<h2>Sections</h2><table>" in with_tables[0]
+    # The sizing assumes a wide part number, so a limit a little over the real size makes the tables go first.
+    tight = si.render_index_notes(index, max_chars=len(with_tables[0]) + 2)
+    assert len(tight) == 1 and len(tight[0]) < len(with_tables[0])
+    assert "<h2>Sections</h2><p>59 entries, see data block.</p>" in tight[0]
+    assert "<h2>Header</h2><table>" in tight[0]                           # the header table stays
+    assert si.parse_index_notes(tight) == index
+    with pytest.raises(ValueError, match="header and sections alone need"):
+        si.render_index_notes(index, max_chars=1_000)
 
 
 def test_parse_ignores_part_order(big):
@@ -348,6 +476,14 @@ def test_round_trip_after_note_editor_simulation_many_parts():
     assert si.parse_index_notes(edited) == index
 
 
+def test_round_trip_after_note_editor_simulation_wide_index():
+    index = wide_index(300, 60, 3, meaning_len=120)
+    notes = si.render_index_notes(index, max_chars=30_000)
+    assert len(notes) > 2
+    edited = [note_editor(n, attrs=True, br=True, entities=True) for n in notes]
+    assert si.parse_index_notes(edited) == index
+
+
 def test_other_pre_blocks_are_ignored():
     index = small_index(3)
     note = si.render_index_notes(index)[0]
@@ -404,10 +540,31 @@ def test_parse_rejects_broken_json():
     _raises_invalid([note[: note.rindex("<pre>") + 200]], "does not parse")  # truncated, unclosed pre
 
 
-def test_parse_rejects_a_later_part_that_holds_more_than_facts():
+def test_parse_rejects_a_later_part_that_holds_a_header_sections_or_unknown_keys():
     notes = si.render_index_notes(big_index(200), max_chars=30_000)
-    bad = notes[1].replace('{"facts":', '{"vocabulary":[],"facts":', 1)
-    _raises_invalid([notes[0], bad] + notes[2:], "only facts")
+    for tampered in (
+        notes[1].replace('"sections":[]', '"sections":[{"id":"S99"}]', 1),
+        notes[1].replace('"header":{}', '"header":{"title":"x"}', 1),
+        notes[1].replace('{"schema"', '{"x_extra":1,"schema"', 1),
+    ):
+        assert tampered != notes[1]
+        _raises_invalid([notes[0], tampered] + notes[2:], "a later part may hold only")
+
+
+def test_parse_rejects_an_array_that_is_not_a_list():
+    notes = si.render_index_notes(big_index(200), max_chars=30_000)
+    bad = notes[1].replace('"vocabulary":[]', '"vocabulary":{}', 1)
+    assert bad != notes[1]
+    _raises_invalid([notes[0], bad] + notes[2:], "vocabulary is not an array")
+
+
+def test_parse_reads_a_part_with_only_facts_from_an_older_layout():
+    notes = si.render_index_notes(big_index(200), max_chars=30_000)
+    facts_only = notes[1].replace(
+        '{"schema":"source-index/v1","header":{},"vocabulary":[],"sections":[],"facts":',
+        '{"facts":', 1).replace(',"tables_figures":[],"equations":[],"gaps":[]}', "}", 1)
+    assert facts_only != notes[1]
+    assert si.parse_index_notes([notes[0], facts_only] + notes[2:]) == big_index(200)
 
 
 def test_parse_rejects_a_block_line_that_disagrees_with_the_header():

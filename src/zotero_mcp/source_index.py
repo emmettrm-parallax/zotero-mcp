@@ -9,9 +9,17 @@ parent item as one or more child notes. Each note holds
   line 2 the compact JSON of that part.
 
 The JSON is the source of truth and the tables are a view, so the parser reads
-only the ``<pre>`` blocks. Part 1 carries every key of the index plus as many
-facts as fit under ``max_chars``. Later parts carry a ``facts`` slice and
-nothing else. A fact is never split across parts.
+only the ``<pre>`` blocks. Every part's JSON has the same eight top-level keys.
+Part 1 carries ``header``, ``sections`` and any unknown key; later parts hold
+``{}`` and ``[]`` there. The other five arrays (``tables_figures``,
+``equations``, ``vocabulary``, ``gaps``, ``facts``) are filled greedily in that
+order, part after part, so any of them can span several parts. An entry is
+never split across parts, and the parser joins the arrays in part order.
+
+The tables are compact (vocabulary: term, kind, meaning; gaps: page, kind,
+note). When the tables of a part would be more than 1.5 times the size of its
+JSON, or would not let one entry fit a part, that part drops them and keeps a
+one-line ``<p>N entries, see data block.</p>`` per block instead.
 
 The JSON is written with ``ensure_ascii`` so the block is plain ASCII: a note
 editor that normalises exotic whitespace or Unicode cannot alter it. The
@@ -256,117 +264,163 @@ def _variables_cell(variables: Any) -> str:
     return "; ".join(parts)
 
 
-def _part_one_tables_before_facts(index: dict) -> str:
-    header = index.get("header") if isinstance(index.get("header"), dict) else {}
-    header_rows = [_row([key, _pages_cell(value) if key == "scope_pages" else value]) for key, value in header.items()]
-    vocab_rows = [
-        _row([v.get("term"), v.get("kind"), v.get("symbol"), v.get("meaning"), v.get("variants"), v.get("pages")])
-        for v in index.get("vocabulary") or [] if isinstance(v, dict)
-    ]
-    section_rows = [
-        _row([s.get("id"), s.get("title"), s.get("level"), f"{s.get('start_page')}-{s.get('end_page')}", s.get("path")])
-        for s in index.get("sections") or [] if isinstance(s, dict)
-    ]
-    return (
-        _section_block("Header", ["field", "value"], header_rows)
-        + _section_block("Vocabulary", ["term", "kind", "symbol", "meaning", "variants", "pages"], vocab_rows)
-        + _section_block("Sections", ["id", "title", "level", "pages", "path"], section_rows)
-    )
+def _tf_row(entry: dict) -> str:
+    return _row([entry.get("id"), entry.get("label"), entry.get("kind"), entry.get("caption"), entry.get("page"),
+                 entry.get("section_id"), entry.get("extracted"), entry.get("fact_ids")])
 
 
-def _part_one_tables_after_facts(index: dict) -> str:
-    tf_rows = [
-        _row([t.get("id"), t.get("label"), t.get("kind"), t.get("caption"), t.get("page"), t.get("section_id"),
-              t.get("extracted"), t.get("fact_ids")])
-        for t in index.get("tables_figures") or [] if isinstance(t, dict)
-    ]
-    eq_rows = [
-        _row([e.get("id"), e.get("label"), e.get("page"), e.get("section_id"), e.get("latex"),
-              _variables_cell(e.get("variables")), e.get("validity"), e.get("fact_ids")])
-        for e in index.get("equations") or [] if isinstance(e, dict)
-    ]
-    gap_rows = [
-        _row([g.get("id"), g.get("page"), g.get("section_id"), g.get("kind"), g.get("note")])
-        for g in index.get("gaps") or [] if isinstance(g, dict)
-    ]
-    return (
-        _section_block("Tables and figures",
-                       ["id", "label", "kind", "caption", "page", "section", "extracted", "facts"], tf_rows)
-        + _section_block("Equations",
-                         ["id", "label", "page", "section", "latex", "variables", "validity", "facts"], eq_rows)
-        + _section_block("Gaps", ["id", "page", "section", "kind", "note"], gap_rows)
-    )
+def _eq_row(entry: dict) -> str:
+    return _row([entry.get("id"), entry.get("label"), entry.get("page"), entry.get("section_id"), entry.get("latex"),
+                 _variables_cell(entry.get("variables")), entry.get("validity"), entry.get("fact_ids")])
 
 
-def _render_part(k: int, n: int, build_id: str, index: dict, facts: list[dict], rows: list[str]) -> str:
-    """One note. ``facts`` and ``rows`` are the slice for this part."""
+def _vocab_row(entry: dict) -> str:
+    meaning = _cell(entry.get("meaning"))
+    variants = _cell(entry.get("variants"))
+    if variants:
+        meaning = " ".join(x for x in (meaning, f"(also: {variants})") if x)
+    return _row([entry.get("term"), entry.get("kind"), meaning])
+
+
+def _gap_row(entry: dict) -> str:
+    return _row([entry.get("page"), entry.get("kind"), entry.get("note")])
+
+
+#: The packed blocks, in the order that parts are filled: title, table headers, row builder.
+_VIEWS: dict[str, tuple[str, list[str], Any]] = {
+    "tables_figures": ("Tables and figures",
+                       ["id", "label", "kind", "caption", "page", "section", "extracted", "facts"], _tf_row),
+    "equations": ("Equations", ["id", "label", "page", "section", "latex", "variables", "validity", "facts"], _eq_row),
+    "vocabulary": ("Vocabulary", ["term", "kind", "meaning"], _vocab_row),
+    "gaps": ("Gaps", ["page", "kind", "note"], _gap_row),
+    "facts": ("Facts", _FACT_HEADERS, _fact_row),
+}
+_PACK_ORDER = tuple(_VIEWS)
+#: A part whose tables are longer than this many times its JSON drops the tables.
+_VIEW_RATIO = 1.5
+
+
+def _entry_row(block: str, entry: Any) -> str:
+    return _VIEWS[block][2](entry) if isinstance(entry, dict) else _row([entry])
+
+
+def _table_view(block: str, rows: list[str]) -> str:
+    return f"<h2>{_esc(_VIEWS[block][0])}</h2>{_table(_VIEWS[block][1], rows)}"
+
+
+def _data_view(title: str, count: Any) -> str:
+    return f"<h2>{_esc(title)}</h2><p>{count} entries, see data block.</p>"
+
+
+def _render_part(
+    k: int, n: int, build_id: str, index: dict, entries: dict[str, list], views: bool,
+) -> tuple[str, int, int]:
+    """One note, the size of its tables and the size of its data block.
+
+    ``entries`` holds this part's slice of each packed block.
+
+    With ``views`` false the tables of the large blocks become one-line ``see data block`` notes.
+    """
     title = "Source index" if k == 1 else f"Source index (part {k} of {n})"
     intro = (
         f"<p>Machine-readable source index ({SCHEMA}), part {k} of {n}, build {_esc(build_id)}. "
         "The JSON in the block at the end of this note is the source of truth and the tables are a view. "
         "Do not edit this note by hand.</p>"
     )
-    # The facts table is always rendered (even with no rows) so that the size
-    # of a part is its fixed part plus a constant amount per fact.
-    facts_table = "<h2>Facts</h2>" + _table(_FACT_HEADERS, rows)
+    view = ""
     if k == 1:
         payload = dict(index)
-        payload["facts"] = facts
-        body = (
-            _part_one_tables_before_facts(index) + facts_table + _part_one_tables_after_facts(index)
-        )
+        header = index.get("header") if isinstance(index.get("header"), dict) else {}
+        header_rows = [_row([key, _pages_cell(value) if key == "scope_pages" else value])
+                       for key, value in header.items()]
+        sections = index.get("sections") if isinstance(index.get("sections"), list) else []
+        section_rows = [
+            _row([s.get("id"), s.get("title"), s.get("level"), f"{s.get('start_page')}-{s.get('end_page')}",
+                  s.get("path")])
+            for s in sections if isinstance(s, dict)
+        ]
+        view += _section_block("Header", ["field", "value"], header_rows)
+        if not views and section_rows:
+            view += _data_view("Sections", len(section_rows))
+        else:
+            view += _section_block("Sections", ["id", "title", "level", "pages", "path"], section_rows)
     else:
-        payload = {"facts": facts}
-        body = facts_table
-    block = f"{SCHEMA} part {k}/{n} build {build_id}\n{_dumps(payload)}"
-    return f"<h1>{_esc(title)}</h1>{intro}{body}<pre>{_esc(block)}</pre>"
+        payload = {key: [] for key in TOP_LEVEL_KEYS}
+        payload["schema"], payload["header"] = SCHEMA, {}
+    payload.update(entries)
+    for block in _PACK_ORDER:
+        if entries[block]:
+            view += (_table_view(block, [_entry_row(block, e) for e in entries[block]]) if views
+                     else _data_view(_VIEWS[block][0], len(entries[block])))
+    pre = _esc(f"{SCHEMA} part {k}/{n} build {build_id}\n{_dumps(payload)}")
+    return f"<h1>{_esc(title)}</h1>{intro}{view}<pre>{pre}</pre>", len(view), len(pre)
 
 
 def render_index_notes(index, max_chars: int = 190_000) -> list[str]:
     """Note HTML for an index, one string per part, each at most ``max_chars``.
 
-    Raises ValueError when the index cannot be laid out: no ``header.build_id``,
-    or part 1 without facts (or one fact) alone is over ``max_chars``.
+    Part 1 holds ``header`` and ``sections``. ``tables_figures``, ``equations``,
+    ``vocabulary``, ``gaps`` and ``facts`` are then filled greedily in that
+    order, and each can continue into later parts. Raises ValueError when the
+    index cannot be laid out: no ``header.build_id``, part 1 without any entry
+    over ``max_chars``, or one entry that alone fills more than a part.
     """
     if not isinstance(index, dict) or not isinstance(index.get("header"), dict):
         raise ValueError("index must be an object with a header")
     build_id = str(index["header"].get("build_id") or "").strip()
     if not build_id or "\n" in build_id or "\r" in build_id:
         raise ValueError("header.build_id must be a non-empty single-line string")
-    facts = [f for f in (index.get("facts") or [])]
+    entries = {block: list(index.get(block) or []) for block in _PACK_ORDER}
+    json_cost = {b: [len(_esc(_dumps(e))) + 1 for e in entries[b]] for b in _PACK_ORDER}  # +1: the JSON comma
+    view_cost = {b: [len(_entry_row(b, e)) for e in entries[b]] for b in _PACK_ORDER}
+    # What a block adds to a part the first time it appears there.
+    overhead = {(b, True): len(_table_view(b, [])) for b in _PACK_ORDER}
+    overhead.update({(b, False): len(_data_view(_VIEWS[b][0], _N_PLACEHOLDER)) for b in _PACK_ORDER})
+    empty: dict[str, list] = {b: [] for b in _PACK_ORDER}
 
-    rows = [_fact_row(f) if isinstance(f, dict) else _row([f]) for f in facts]
-    costs = [len(rows[i]) + len(_esc(_dumps(f))) + 1 for i, f in enumerate(facts)]  # +1: the JSON comma
-
-    def fixed(first: bool) -> int:
+    def fixed(first: bool, views: bool) -> int:
         # A wide part number and count make this an upper bound for every part.
         k = 1 if first else _N_PLACEHOLDER
-        return len(_render_part(k, _N_PLACEHOLDER, build_id, index, [], []))
+        return len(_render_part(k, _N_PLACEHOLDER, build_id, index, empty, views)[0])
 
-    room_first, room_next = max_chars - fixed(True), max_chars - fixed(False)
-    if room_first < 0:
+    def new_part(first: bool, views: bool = True) -> dict:
+        return {"views": views, "room": max_chars - fixed(first, views), "take": {b: [] for b in _PACK_ORDER}}
+
+    def cost(part: dict, block: str, i: int) -> int:
+        extra = 0 if part["take"][block] else overhead[(block, part["views"])]
+        return json_cost[block][i] + (view_cost[block][i] if part["views"] else 0) + extra
+
+    part = new_part(True)
+    if part["room"] < 0:  # the tables of header and sections may be the cause: keep the data only
+        part = new_part(True, views=False)
+    if part["room"] < 0:
         raise ValueError(
-            f"header, vocabulary, sections, tables_figures, equations and gaps alone need {fixed(True)} "
-            f"characters, more than max_chars={max_chars}"
+            f"header and sections alone need {max_chars - part['room']} characters, more than max_chars={max_chars}"
         )
-    slices: list[list[int]] = [[]]
-    room = room_first
-    for i, cost in enumerate(costs):
-        if cost <= room:
-            slices[-1].append(i)
-            room -= cost
-        elif cost > room_next:
-            raise ValueError(f"fact {i} ({facts[i].get('id') if isinstance(facts[i], dict) else i}) needs {cost} "
-                             f"characters, more than one part of max_chars={max_chars} holds")
-        else:
-            slices.append([i])
-            room = room_next - cost
+    parts = [part]
+    for block in _PACK_ORDER:
+        for i, entry in enumerate(entries[block]):
+            part = parts[-1]
+            if cost(part, block, i) > part["room"]:
+                part = new_part(False)
+                if cost(part, block, i) > part["room"]:  # the tables do not let it fit: data only
+                    part = new_part(False, views=False)
+                if cost(part, block, i) > part["room"]:
+                    label = entry.get("id") or entry.get("term") if isinstance(entry, dict) else i
+                    raise ValueError(f"{block} entry {i} ({label}) needs {cost(part, block, i)} characters, "
+                                     f"more than one part of max_chars={max_chars} holds")
+                parts.append(part)
+            part["room"] -= cost(part, block, i)
+            part["take"][block].append(i)
 
-    n = len(slices)
-    notes = [
-        _render_part(k, n, build_id, index, [facts[i] for i in ids], [rows[i] for i in ids])
-        for k, ids in enumerate(slices, start=1)
-    ]
+    n = len(parts)
+    notes = []
+    for k, part in enumerate(parts, start=1):
+        slice_ = {b: [entries[b][i] for i in part["take"][b]] for b in _PACK_ORDER}
+        note, view_chars, data_chars = _render_part(k, n, build_id, index, slice_, part["views"])
+        if part["views"] and view_chars > _VIEW_RATIO * data_chars:
+            note = _render_part(k, n, build_id, index, slice_, False)[0]
+        notes.append(note)
     # The estimate uses a wider part number and count than the real ones, so this
     # cannot trip; it guards the packing arithmetic against a future edit.
     for k, note in enumerate(notes, start=1):
@@ -425,9 +479,11 @@ def parse_index_notes(htmls) -> dict:
     """Rebuild the index from the HTML of its notes, in any order.
 
     Reads only the ``<pre>`` blocks (a ``<pre><code>`` block and entity
-    encoding are fine). Raises SourceIndexError(``invalid_index``) for no
-    block, a missing or duplicate part, mixed part counts or build ids, bad
-    JSON, or a later part that holds anything but facts.
+    encoding are fine). The header, the sections and any unknown key come from
+    part 1; the other arrays are joined in part order. Raises
+    SourceIndexError(``invalid_index``) for no block, a missing or duplicate
+    part, mixed part counts or build ids, bad JSON, or a later part that holds
+    a header, sections or an unknown key.
     """
     if isinstance(htmls, str):
         htmls = [htmls]
@@ -472,10 +528,17 @@ def parse_index_notes(htmls) -> dict:
             continue
         if not isinstance(value, dict):
             problems.append(f"part {k}: the JSON is not an object")
-        elif k > 1 and set(value) != {"facts"}:
-            problems.append(f"part {k}: a later part may hold only facts, found {sorted(value)}")
-        elif not isinstance(value.get("facts", []), list):
-            problems.append(f"part {k}: facts is not an array")
+            continue
+        if k > 1:
+            stray = sorted(key for key in value if key not in TOP_LEVEL_KEYS)
+            stray += sorted(key for key in ("header", "sections") if value.get(key))
+            if stray or value.get("schema", SCHEMA) != SCHEMA:
+                problems.append(f"part {k}: a later part may hold only the arrays {', '.join(_PACK_ORDER)}, "
+                                f"found {stray or ['another schema']}")
+                continue
+        bad = [name for name in _PACK_ORDER if not isinstance(value.get(name, []), list)]
+        if bad:
+            problems.append(f"part {k}: {', '.join(bad)} is not an array")
         else:
             decoded[k] = value
     if problems:
@@ -488,10 +551,12 @@ def parse_index_notes(htmls) -> dict:
         if str(header["build_id"]).strip() != build:
             raise _invalid([f"header.build_id {header['build_id']!r} does not match the block line build {build!r}"],
                            "cannot read index")
-    facts = list(index.get("facts", []))
-    for k in range(2, total + 1):
-        facts.extend(decoded[k]["facts"])
-    index["facts"] = facts
+    for name in _PACK_ORDER:
+        joined = list(index.get(name, []))
+        for k in range(2, total + 1):
+            joined.extend(decoded[k].get(name, []))
+        if name in index or joined:
+            index[name] = joined
     return index
 
 
