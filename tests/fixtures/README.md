@@ -23,3 +23,5 @@ vocabulary (`journal-article`, `book-chapter`) rather than the CSL spec's, and
 
 To refresh one, re-fetch the URL above and drop `reference`. Do not edit them
 by hand — an edited fixture is a hand-written fixture again.
+
+The file `source_index_sample.json` is a hand-written sample for the source-index tests.

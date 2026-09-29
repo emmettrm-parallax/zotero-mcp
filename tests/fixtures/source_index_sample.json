@@ -1,0 +1,217 @@
+{
+  "schema": "source-index/v1",
+  "header": {
+    "item_key": "ABCD2345",
+    "attachment_key": "WXYZ6789",
+    "title": "Sample Report on Annular Combustor Liner Cooling (synthetic test data)",
+    "authors": ["A. Author", "B. Writer"],
+    "year": 2021,
+    "doc_type": "report",
+    "page_count": 30,
+    "scope_pages": [[1, 30]],
+    "page_offset": 2,
+    "built": "2026-09-29",
+    "build_id": "sample-20260929-01",
+    "builder": "fixture"
+  },
+  "vocabulary": [
+    {
+      "term": "effusion cooling",
+      "kind": "term",
+      "symbol": null,
+      "meaning": "Film cooling through a dense array of small angled holes in the liner wall.",
+      "variants": ["full-coverage film cooling", "effusion"],
+      "pages": [5, 12]
+    },
+    {
+      "term": "blowing ratio",
+      "kind": "symbol",
+      "symbol": "M",
+      "meaning": "Coolant mass flux divided by hot-gas mass flux.",
+      "variants": ["blowing parameter"],
+      "pages": [12, 14]
+    },
+    {
+      "term": "cooling effectiveness",
+      "kind": "symbol",
+      "symbol": "η",
+      "meaning": "(T_g - T_w) / (T_g - T_c), dimensionless wall temperature.",
+      "variants": ["film effectiveness"],
+      "pages": [14, 22]
+    }
+  ],
+  "sections": [
+    {"id": "S01", "title": "Introduction", "path": "1", "level": 1, "start_page": 1, "end_page": 8},
+    {"id": "S02", "title": "Test rig and method", "path": "2", "level": 1, "start_page": 9, "end_page": 15},
+    {"id": "S03", "title": "Results", "path": "3", "level": 1, "start_page": 16, "end_page": 30}
+  ],
+  "facts": [
+    {
+      "id": "F0001",
+      "kind": "text",
+      "statement": "The liner uses 4,200 effusion holes per square metre of wall area.",
+      "quantity": "hole density",
+      "symbol": null,
+      "value": "4,200",
+      "value_num": 4200,
+      "value_max": null,
+      "unit": "1/m^2",
+      "condition": "baseline liner",
+      "validity": null,
+      "page": 6,
+      "printed_page": 4,
+      "section_id": "S01",
+      "ref": null,
+      "quote": "The baseline liner carries 4,200 effusion holes per square metre.",
+      "found_by": ["reader-1"],
+      "confidence": 5
+    },
+    {
+      "id": "F0002",
+      "kind": "text",
+      "statement": "Hole diameter is 0.5 mm.",
+      "quantity": "hole diameter",
+      "symbol": "d",
+      "value": "0.5",
+      "value_num": 0.5,
+      "value_max": null,
+      "unit": "mm",
+      "condition": "baseline liner",
+      "validity": null,
+      "page": 6,
+      "printed_page": 4,
+      "section_id": "S01",
+      "ref": null,
+      "quote": "Each hole has a diameter of 0.5 mm and a 30 degree streamwise angle.",
+      "found_by": ["reader-1", "reader-2"],
+      "confidence": 5
+    },
+    {
+      "id": "F0003",
+      "kind": "text",
+      "statement": "Coolant supply temperature was held at 300 K.",
+      "quantity": "coolant temperature",
+      "symbol": "T_c",
+      "value": "300",
+      "value_num": 300,
+      "value_max": null,
+      "unit": "K",
+      "condition": "all test runs",
+      "validity": null,
+      "page": 10,
+      "printed_page": 8,
+      "section_id": "S02",
+      "ref": null,
+      "quote": "Coolant was supplied at a constant 300 K for all runs.",
+      "found_by": ["reader-1"],
+      "confidence": 4
+    },
+    {
+      "id": "F0004",
+      "kind": "table",
+      "statement": "Blowing ratio 1.5 gives an area-averaged effectiveness of 0.42.",
+      "quantity": "cooling effectiveness",
+      "symbol": "η",
+      "value": "0.42",
+      "value_num": 0.42,
+      "value_max": null,
+      "unit": null,
+      "condition": "M = 1.5, density ratio 1.6",
+      "validity": "0.5 <= M <= 2.5",
+      "page": 18,
+      "printed_page": 16,
+      "section_id": "S03",
+      "ref": "Table 2",
+      "quote": "1.5 | 1.6 | 0.42",
+      "found_by": ["reader-2"],
+      "confidence": 5
+    },
+    {
+      "id": "F0005",
+      "kind": "table",
+      "statement": "Blowing ratio 2.0 gives an area-averaged effectiveness of 0.51.",
+      "quantity": "cooling effectiveness",
+      "symbol": "η",
+      "value": "0.51",
+      "value_num": 0.51,
+      "value_max": null,
+      "unit": null,
+      "condition": "M = 2.0, density ratio 1.6",
+      "validity": "0.5 <= M <= 2.5",
+      "page": 18,
+      "printed_page": 16,
+      "section_id": "S03",
+      "ref": "Table 2",
+      "quote": "2.0 | 1.6 | 0.51",
+      "found_by": ["reader-2"],
+      "confidence": 5
+    },
+    {
+      "id": "F0006",
+      "kind": "equation",
+      "statement": "Effectiveness is defined from gas, wall and coolant temperatures.",
+      "quantity": null,
+      "symbol": "η",
+      "value": null,
+      "value_num": null,
+      "value_max": null,
+      "unit": null,
+      "condition": null,
+      "validity": null,
+      "page": 14,
+      "printed_page": 12,
+      "section_id": "S02",
+      "ref": "Eq. (3)",
+      "quote": "eta = (T_g - T_w) / (T_g - T_c)",
+      "found_by": ["reader-1"],
+      "confidence": 5
+    }
+  ],
+  "tables_figures": [
+    {
+      "id": "T01",
+      "label": "Table 2",
+      "kind": "table",
+      "caption": "Area-averaged effectiveness versus blowing ratio.",
+      "page": 18,
+      "section_id": "S03",
+      "extracted": "full",
+      "fact_ids": ["F0004", "F0005"]
+    },
+    {
+      "id": "T02",
+      "label": "Fig. 7",
+      "kind": "plot",
+      "caption": "Centreline effectiveness along the liner for three blowing ratios.",
+      "page": 20,
+      "section_id": "S03",
+      "extracted": "none",
+      "fact_ids": []
+    }
+  ],
+  "equations": [
+    {
+      "id": "E01",
+      "label": "Eq. (3)",
+      "page": 14,
+      "section_id": "S02",
+      "latex": "\\eta = \\frac{T_g - T_w}{T_g - T_c}",
+      "variables": [
+        {"symbol": "T_g", "meaning": "hot-gas temperature", "unit": "K"},
+        {"symbol": "T_w", "meaning": "adiabatic wall temperature", "unit": "K"},
+        {"symbol": "T_c", "meaning": "coolant temperature", "unit": "K"}
+      ],
+      "validity": null,
+      "fact_ids": ["F0006"]
+    }
+  ],
+  "gaps": [
+    {
+      "id": "G01",
+      "page": 20,
+      "section_id": "S03",
+      "kind": "figure-values",
+      "note": "Fig. 7 curves have no data labels; values cannot be read from text."
+    }
+  ]
+}
