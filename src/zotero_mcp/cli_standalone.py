@@ -609,6 +609,135 @@ def cmd_layout(args):
         print()
 
 
+def _with_source(pdf, data: dict) -> dict:
+    """An engine result under the keys of the PDF it read.
+
+    The engines take a path and know nothing of Zotero, so the identity
+    fields are added here. They lead the result and win over any field of
+    the same name the engine returned.
+    """
+    head = {"key": pdf.parent_key, "attachment_key": pdf.attachment_key, "title": pdf.title}
+    return {**head, **{k: v for k, v in data.items() if k not in head}}
+
+
+def _emit_result(args, command: str, data: dict, render) -> None:
+    """Emit *data* as the JSON envelope, or `render(data)` as markdown."""
+    _out(args, command, data=data, text=None if _json_mode(args) else render(data))
+
+
+def cmd_grep(args):
+    """Count and locate terms in a PDF attachment, page by page."""
+    import re
+
+    pages = _parse_pages(args.pages)
+    if args.regex:
+        # Reported before the PDF is fetched, like a bad --rect.
+        for term in args.terms:
+            try:
+                re.compile(term)
+            except re.error as exc:
+                raise _cli_json.CliError(f"Bad regex {term!r}: {exc}", code="bad_regex") from exc
+    setup_zotero_environment()
+    from zotero_mcp import pdf_grep, pdf_source
+
+    with pdf_source.resolved_pdf(args.key, _ctx(args)) as pdf:
+        try:
+            data = pdf_grep.grep_pdf(
+                pdf.path, args.terms, regex=args.regex, word=args.word, pages=pages,
+                context=args.context, max_hits=args.max_hits, order=args.order,
+                use_cache=not args.no_cache, jobs=args.jobs,
+            )
+        except re.error as exc:
+            raise _cli_json.CliError(f"Bad regex: {exc}", code="bad_regex") from exc
+    _emit_result(args, "grep", _with_source(pdf, data), pdf_grep.format_grep_markdown)
+
+
+def cmd_sections(args):
+    """Split a PDF attachment into sections, from its outline or in page chunks."""
+    pages = _parse_pages(args.pages)
+    setup_zotero_environment()
+    from zotero_mcp import pdf_sections, pdf_source
+
+    with pdf_source.resolved_pdf(args.key, _ctx(args)) as pdf:
+        data = pdf_sections.sections_for_pdf(
+            pdf.path, pages=pages, max_level=args.max_level,
+            chunk_pages=args.chunk_pages, inventory=args.inventory,
+        )
+    _emit_result(args, "sections", _with_source(pdf, data), pdf_sections.format_sections_markdown)
+
+
+def _read_index_json(source: str):
+    """The index object from FILE, or from stdin when *source* is `-`."""
+    try:
+        if source == "-":
+            raw = sys.stdin.read()
+        else:
+            with open(source, encoding="utf-8") as handle:
+                raw = handle.read()
+        return json.loads(raw)
+    except (OSError, ValueError) as exc:
+        where = "stdin" if source == "-" else source
+        raise _cli_json.CliError(
+            f"Cannot read index JSON from {where}: {exc}", code="invalid_index",
+        ) from exc
+
+
+def _count(value) -> int:
+    """A count that an engine may report as a number or as a list of keys."""
+    return len(value) if isinstance(value, (list, tuple, set)) else int(value or 0)
+
+
+def _format_index_push(data: dict) -> str:
+    verb = "Dry run for" if data.get("dry_run") else "Indexed"
+    lines = [
+        f"{verb} {data.get('item_key')}: {data.get('parts')} note part(s), "
+        f"{data.get('chars')} characters",
+        f"created {_count(data.get('created'))}, updated {_count(data.get('updated'))}, "
+        f"trashed {_count(data.get('trashed'))}",
+    ]
+    counts = data.get("counts") or {}
+    if counts:
+        lines.append(", ".join(f"{name} {n}" for name, n in counts.items()))
+    if data.get("note_keys"):
+        lines.append("notes: " + ", ".join(data["note_keys"]))
+    return "\n".join(lines)
+
+
+def _format_index_show(data: dict) -> str:
+    head = (f"Source index for {data.get('item_key')}: {data.get('parts')} note part(s)"
+            + (f" ({', '.join(data['note_keys'])})" if data.get("note_keys") else ""))
+    return head + "\n\n" + json.dumps(data.get("index"), indent=2, ensure_ascii=False)
+
+
+def cmd_index(args):
+    """Push a source index into an item's notes, or read it back."""
+    from zotero_mcp import pdf_source, source_index
+
+    ctx = _ctx(args)
+    if args.subcommand == "push":
+        index = _read_index_json(args.from_file)
+        problems = source_index.validate_index(index)
+        if problems:
+            shown = "; ".join(problems[:10])
+            more = f"; and {len(problems) - 10} more" if len(problems) > 10 else ""
+            raise _cli_json.CliError(
+                f"Index is not valid ({len(problems)} problem(s)): {shown}{more}",
+                code="invalid_index",
+            )
+        setup_zotero_environment()
+        data = source_index.push_index(
+            pdf_source.parent_key(args.key), index, replace=args.replace,
+            tags=_split_csv(args.tags), dry_run=args.dry_run, ctx=ctx,
+        )
+        _emit_result(args, "index push", data, _format_index_push)
+    elif args.subcommand == "show":
+        setup_zotero_environment()
+        data = source_index.show_index(
+            pdf_source.parent_key(args.key), section=args.section, ctx=ctx,
+        )
+        _emit_result(args, "index show", data, _format_index_show)
+
+
 def cmd_notes(args):
     setup_zotero_environment()
     search_mod, retrieval, annotations, write_mod, _client = _import_tools()
@@ -1408,6 +1537,56 @@ def build_parser() -> argparse.ArgumentParser:
     ly_p.add_argument("--pages", default="all",
                       help="Pages to scan: all (default), 3, 3-6, or 1,4,6-9")
 
+    # grep / sections / index -- page-anchored search and the source index note
+    gr_p = sub.add_parser("grep", help="Count and locate terms in a PDF, page by page")
+    gr_p.add_argument("key", help="Item key or PDF attachment key")
+    gr_p.add_argument("terms", nargs="+", metavar="TERM",
+                      help="Terms to find; each is counted on its own")
+    gr_p.add_argument("--regex", action="store_true", help="Treat each TERM as a regex")
+    gr_p.add_argument("--word", action="store_true", help="Match whole words only")
+    gr_p.add_argument("--pages", default="all",
+                      help="Pages to search: all (default), 3, 3-6, or 1,4,6-9")
+    gr_p.add_argument("--context", type=int, default=300,
+                      help="Characters of context on each side of a match")
+    gr_p.add_argument("--max-hits", type=int, default=200,
+                      help="Cap on snippets returned; counts always cover every hit")
+    gr_p.add_argument("--order", choices=["page", "score"], default="page",
+                      help="Order pages by number, or by hit density")
+    gr_p.add_argument("--no-cache", action="store_true", help="Do not use the page-text cache")
+    gr_p.add_argument("--jobs", type=int, help="Worker processes for text extraction")
+
+    sc_p = sub.add_parser("sections", help="Split a PDF into sections for reading in parts")
+    sc_p.add_argument("key", help="Item key or PDF attachment key")
+    sc_p.add_argument("--pages", default="all",
+                      help="Pages to cover: all (default), 3, 3-6, or 1,4,6-9")
+    sc_p.add_argument("--max-level", type=int, default=2,
+                      help="Deepest outline level that starts a section")
+    sc_p.add_argument("--chunk-pages", type=int, default=8,
+                      help="Longest section in pages; also the chunk size with no outline")
+    sc_p.add_argument("--inventory", action="store_true",
+                      help="List the tables, figures and equations in each section")
+
+    ix_p = sub.add_parser("index", help="Store or read a source index note on an item")
+    ix_sub = ix_p.add_subparsers(dest="subcommand", required=True)
+    ixp = ix_sub.add_parser("push", help="Write an index JSON file into the item's notes")
+    ixp.add_argument("key", help="Item key or PDF attachment key")
+    ixp.add_argument("--from", dest="from_file", required=True, metavar="FILE",
+                     help="Index JSON file; - reads stdin")
+    ixp.add_argument("--replace", action="store_true",
+                     help="Replace the item's existing index instead of failing")
+    ixp.add_argument("--tags", help="Comma-separated tags for the index notes")
+    ixp.add_argument("--dry-run", action="store_true",
+                     help="Report what would be written, without writing")
+    ixs = ix_sub.add_parser("show", help="Read an item's index back from its notes")
+    ixs.add_argument("key", help="Item key or PDF attachment key")
+    ixs.add_argument("--section", help="Only this section (S03) and its entries")
+    # A leaf parser is not wrapped by add_parser above, so it gets --json here.
+    # SUPPRESS keeps a `--json` given before the command from being undone.
+    for leaf in (ixp, ixs):
+        leaf.add_argument("--json", action="store_true", dest="json_out",
+                          default=argparse.SUPPRESS,
+                          help="Emit a JSON envelope instead of markdown")
+
     # notes
     n_p = sub.add_parser("notes", help="Manage notes", aliases=["n"])
     n_sub = n_p.add_subparsers(dest="subcommand")
@@ -1683,6 +1862,9 @@ _CMD_MAP = {
     "library": cmd_library,
     "outline": cmd_outline,
     "layout": cmd_layout,
+    "grep": cmd_grep,
+    "sections": cmd_sections,
+    "index": cmd_index,
     "read": cmd_read,
     "attach": cmd_attach,
     "delete": cmd_delete,
@@ -1723,6 +1905,14 @@ Commands returning structured data
   annotations list      the annotations payload
   notes list            data.notes[] -- with both .text and .html
   config                data.settings
+  grep                  data.counts{}, data.total_hits, data.pages[] -- per-page
+                        hits and snippets, each match marked [[ ]]
+  sections              data.sections[], data.source, data.scope
+  index push            data.note_keys, data.parts, data.counts
+  index show            data.index -- the parsed index, or one section of it
+
+grep, sections and index also fail with a code a caller can branch on:
+no_pdf_attachment, bad_regex, no_index, index_exists, invalid_index.
 
 Every other command returns {"text": "<the markdown it would have
 printed>"}. That is deliberate: those commands' answers really are status
@@ -1747,6 +1937,24 @@ fields are not removed or retyped without bumping it. Parse defensively.
 """
 
 
+def _keep_pymupdf_off_stdout() -> None:
+    """Send PyMuPDF's own messages to stderr.
+
+    PyMuPDF reports through print(). The `import fitz` deprecation warning,
+    for one, lands on stdout the first time a tool imports `fitz`, so the
+    output of `--json read` and `--json layout` began with a line that is not
+    JSON. `set_messages` reroutes those messages to stderr, where the warning
+    is noise but no longer breaks a pipe. A PyMuPDF too old to have
+    `set_messages` is left as it is.
+    """
+    try:
+        import pymupdf
+
+        pymupdf.set_messages(fd=2)
+    except Exception:
+        pass
+
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
@@ -1764,6 +1972,7 @@ def main():
         parser.print_help()
         sys.exit(1)
 
+    _keep_pymupdf_off_stdout()
     try:
         handler(args)
     except KeyboardInterrupt:

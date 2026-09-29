@@ -124,6 +124,42 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `<attachment_key>`
  - `--pages` -- default `all` -- Pages to scan: all (default), 3, 3-6, or 1,4,6-9
 
+## `grep`
+
+ - `<key>` -- Item key or PDF attachment key
+ - `<terms>` -- Terms to find; each is counted on its own
+ - `--regex` -- Treat each TERM as a regex
+ - `--word` -- Match whole words only
+ - `--pages` -- default `all` -- Pages to search: all (default), 3, 3-6, or 1,4,6-9
+ - `--context` -- default `300` -- Characters of context on each side of a match
+ - `--max-hits` -- default `200` -- Cap on snippets returned; counts always cover every hit
+ - `--order` -- one of `page`, `score` -- default `page` -- Order pages by number, or by hit density
+ - `--no-cache` -- Do not use the page-text cache
+ - `--jobs` -- Worker processes for text extraction
+
+## `sections`
+
+ - `<key>` -- Item key or PDF attachment key
+ - `--pages` -- default `all` -- Pages to cover: all (default), 3, 3-6, or 1,4,6-9
+ - `--max-level` -- default `2` -- Deepest outline level that starts a section
+ - `--chunk-pages` -- default `8` -- Longest section in pages; also the chunk size with no outline
+ - `--inventory` -- List the tables, figures and equations in each section
+
+## `index`
+
+### `index push`
+
+ - `<key>` -- Item key or PDF attachment key
+ - `--from` -- **required** -- Index JSON file; - reads stdin
+ - `--replace` -- Replace the item's existing index instead of failing
+ - `--tags` -- Comma-separated tags for the index notes
+ - `--dry-run` -- Report what would be written, without writing
+
+### `index show`
+
+ - `<key>` -- Item key or PDF attachment key
+ - `--section` -- Only this section (S03) and its entries
+
 ## `notes (alias: n)`
 
 ### `notes list`
