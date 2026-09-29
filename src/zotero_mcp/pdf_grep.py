@@ -13,7 +13,8 @@ person sees on the page:
 - A word hyphenated at a line end ("pres-" / "sure") is joined. ``TEXT_DEHYPHENATE``
   is passed to MuPDF, but MuPDF 1.28 leaves the hyphen in plain-text output, so
   ``normalize_text`` joins the line break itself: letter, hyphen, newline,
-  lowercase letter. An uppercase next letter ("Navier-" / "Stokes") stays a compound.
+  lowercase letter. An uppercase next letter ("Navier-" / "Stokes") is a compound:
+  the hyphen stays and the line break goes ("Navier-Stokes").
 - Unicode dashes (U+2010-U+2015, U+2212) become ``-``.
 - Every whitespace run becomes one space.
 - No NFKC: it turns 10⁻³ into 10-3 and would corrupt exponents and units.
@@ -43,7 +44,7 @@ from pathlib import Path
 import pymupdf
 
 # Bump when the extraction flags or the normalisation change: it invalidates every cache entry.
-NORMALIZER_VERSION = 1
+NORMALIZER_VERSION = 2
 
 POOL_MIN_PAGES = 150  # serial extraction is faster below this; spawning workers has a fixed cost
 MARK_OPEN = "[["
@@ -64,7 +65,7 @@ _DASHES = {code: "-" for code in range(0x2010, 0x2016)}
 _DASHES[0x2212] = "-"
 _TRANSLATE = {**_LIGATURES, **_DASHES}
 _WHITESPACE = re.compile(r"\s+")
-_LINE_HYPHEN = re.compile(r"(?<=[^\W\d_])-[^\S\n]*\n\s*(?=[^\W\d_A-Z])")
+_LINE_HYPHEN = re.compile(r"(?<=[^\W\d_])-[^\S\n]*\n\s*(?=[^\W\d_])")
 # A literal term splits on whitespace and hyphens; the pieces are re-joined with _JOINER.
 _TOKEN_SPLIT = re.compile(r"[\s\-]+")
 _JOINER = r"[\s\-]*"
@@ -76,9 +77,14 @@ class BadRegexError(ValueError):
     code = "bad_regex"
 
 
+def _join_line_hyphen(match: re.Match) -> str:
+    """Drop the hyphen before a lowercase letter (a split word); keep it before any other letter."""
+    return "" if match.string[match.end()].islower() else "-"
+
+
 def normalize_text(text: str) -> str:
     """Ligatures expanded, dashes unified, line-end hyphens joined, whitespace collapsed. Never NFKC."""
-    text = _LINE_HYPHEN.sub("", text.translate(_TRANSLATE))
+    text = _LINE_HYPHEN.sub(_join_line_hyphen, text.translate(_TRANSLATE))
     return _WHITESPACE.sub(" ", text).strip()
 
 
@@ -204,11 +210,12 @@ def _compile_term(term: str, *, regex: bool, word: bool) -> re.Pattern:
     if regex:
         body = term
     else:
-        tokens = [re.escape(tok) for tok in _TOKEN_SPLIT.split(normalize_text(term)) if tok]
+        plain = normalize_text(term)
+        tokens = [re.escape(tok) for tok in _TOKEN_SPLIT.split(plain) if tok]
         if not tokens:  # a term made only of dashes and spaces
-            body = re.escape(normalize_text(term))
-        else:
-            body = _JOINER.join(tokens)
+            body = re.escape(plain)
+        else:  # an edge hyphen is literal: "-40" must not find every "40"
+            body = ("-" if plain.startswith("-") else "") + _JOINER.join(tokens) + ("-" if plain.endswith("-") else "")
     if word:
         body = rf"(?<!\w)(?:{body})(?!\w)"
     try:
@@ -230,6 +237,17 @@ def _page_ranges(pages, page_count: int) -> list[int] | None:
             raise ValueError(f"Page range {start}-{end} out of range (PDF has {page_count} pages)")
         selected.update(range(start - 1, min(end, page_count)))
     return sorted(selected)
+
+
+def _runs(indexes: list[int]) -> list[tuple[int, int]]:
+    """Sorted page indexes as inclusive ``(first, last)`` runs of consecutive pages."""
+    runs: list[list[int]] = []
+    for index in indexes:
+        if runs and index == runs[-1][1] + 1:
+            runs[-1][1] = index
+        else:
+            runs.append([index, index])
+    return [(a, b) for a, b in runs]
 
 
 # ---------------------------------------------------------------------------
@@ -342,13 +360,13 @@ def grep_pdf(
         _cache_write(cache_file, texts, labels)
     else:
         cache_state = "off"
-        if selected is None:
+        if selected is None or len(selected) > POOL_MIN_PAGES:
             texts, labels = _extract_pages(pdf_path, page_count, jobs)
         else:  # nothing is stored, so only the requested pages are worth extracting
             texts, labels = [""] * page_count, [""] * page_count
-            for index in selected:
-                page_texts, page_labels = _extract_range(pdf_path, index, index + 1)
-                texts[index], labels[index] = page_texts[0], page_labels[0]
+            for first, last in _runs(selected):  # opening a large PDF costs ~20 ms: open once per run
+                run_texts, run_labels = _extract_range(pdf_path, first, last + 1)
+                texts[first:last + 1], labels[first:last + 1] = run_texts, run_labels
 
     counts = {term: 0 for term in term_list}
     page_rows: list[dict] = []

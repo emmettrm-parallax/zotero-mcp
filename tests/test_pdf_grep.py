@@ -20,14 +20,14 @@ from zotero_mcp.pdf_grep import BadRegexError, format_grep_markdown, grep_pdf, n
 WIDE = 3000  # points: a 400-character line at 10 pt fits without clipping
 
 
-def make_pdf(path, pages, *, font_file=None, width=WIDE):
+def make_pdf(path, pages, *, font_buffer=None, width=WIDE):
     """Write a PDF. ``pages`` is a list of pages, each a list of lines (or one string)."""
     doc = pymupdf.open()
     for lines in pages:
         page = doc.new_page(width=width, height=792)
         kwargs = {"fontsize": 10}
-        if font_file:
-            page.insert_font(fontname="testfont", fontfile=font_file)
+        if font_buffer:
+            page.insert_font(fontname="testfont", fontbuffer=font_buffer)
             kwargs["fontname"] = "testfont"
         for number, line in enumerate([lines] if isinstance(lines, str) else lines):
             page.insert_text((10, 60 + 14 * number), line, **kwargs)
@@ -48,23 +48,17 @@ def pdf(tmp_path):
     return lambda pages, name="doc.pdf", **kw: make_pdf(tmp_path / name, pages, **kw)
 
 
-def unicode_font():
-    """A font file with the ligature and dash glyphs, or None (the base-14 fonts lack them)."""
-    for candidate in (
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/System/Library/Fonts/Supplemental/Times New Roman.ttf",
-        "/Library/Fonts/Arial Unicode.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-        "C:/Windows/Fonts/arial.ttf",
-    ):
-        if os.path.exists(candidate):
-            try:
-                if pymupdf.Font(fontfile=candidate).has_glyph(0xFB02):
-                    return candidate
-            except Exception:
-                continue
-    return None
+@pytest.fixture(scope="module")
+def glyph_font():
+    """pymupdf's bundled fallback font, so no installed font is needed.
+
+    It draws U+FB01-FB04 (fi, fl, ffi, ffl) and U+2010, U+2013-U+2015 as real glyphs. It has no
+    U+FB00, U+FB05, U+FB06 or U+2212: ``TestNormalize`` covers those code points directly.
+    """
+    font = pymupdf.Font("cjk")
+    for code_point in (0xFB01, 0xFB02, 0xFB03, 0xFB04, 0x2010, 0x2013, 0x2014, 0x2015):
+        assert font.has_glyph(code_point), hex(code_point)
+    return font.buffer
 
 
 # ---------------------------------------------------------------------------
@@ -90,8 +84,16 @@ class TestNormalize:
         assert normalize_text("pres-\nsure rise") == "pressure rise"
         assert normalize_text("pres- \n  sure") == "pressure"
 
-    def test_keeps_the_hyphen_before_an_uppercase_letter_or_a_digit(self):
-        assert normalize_text("Navier-\nStokes") == "Navier- Stokes"
+    def test_keeps_a_compound_with_an_uppercase_second_part(self):
+        """A joined "NavierStokes" would not be found by the term "Navier-Stokes"."""
+        assert normalize_text("Navier-\nStokes") == "Navier-Stokes"
+        assert normalize_text("the Navier- \n  Stokes equations") == "the Navier-Stokes equations"
+        assert normalize_text("Fourier-\n\u00c9tienne") == "Fourier-\u00c9tienne"
+
+    def test_dehyphenation_and_compound_side_by_side(self):
+        assert normalize_text("pres-\nsure in a Navier-\nStokes solver") == "pressure in a Navier-Stokes solver"
+
+    def test_keeps_the_hyphen_before_a_digit(self):
         assert normalize_text("Table 3-\n4") == "Table 3- 4"
 
 
@@ -100,14 +102,15 @@ class TestNormalize:
 # ---------------------------------------------------------------------------
 
 class TestMatching:
-    def test_ligature_glyph_is_found_by_the_plain_word(self, pdf):
-        font = unicode_font()
-        if font is None:
-            pytest.skip("no installed font carries U+FB02")
-        path = pdf([["the \ufb02ow of air"], ["nothing here"]], font_file=font)
-        result = grep_pdf(path, "flow", use_cache=False)
-        assert result["counts"] == {"flow": 1}
+    def test_ligature_glyph_is_found_by_the_plain_word(self, pdf, glyph_font):
+        path = pdf([["the \ufb02ow of air, an e\ufb03cient \ufb01lm and a bu\ufb04e"], ["nothing here"]],
+                   font_buffer=glyph_font)
+        raw = pymupdf.open(path)[0].get_text("text", flags=pymupdf.TEXTFLAGS_TEXT | pymupdf.TEXT_PRESERVE_LIGATURES)
+        assert all(ch in raw for ch in "\ufb01\ufb02\ufb03\ufb04"), "the fixture must really draw ligature glyphs"
+        result = grep_pdf(path, ["flow", "efficient", "film", "buffle"], use_cache=False)
+        assert result["counts"] == {"flow": 1, "efficient": 1, "film": 1, "buffle": 1}
         assert [row["page"] for row in result["pages"]] == [1]
+        assert "[[flow]]" in result["pages"][0]["snippets"][0]["text"]
 
     def test_hyphenated_term_finds_hyphen_closed_and_open_spellings(self, pdf):
         path = pdf([["A carry-over loss."], ["A carryover loss."], ["A carry over loss."], ["No such thing."]])
@@ -124,18 +127,34 @@ class TestMatching:
         path = pdf([["A carry-over loss and a carryover loss."]])
         assert grep_pdf(path, "carryover", use_cache=False)["total_hits"] == 1
 
-    def test_unicode_hyphen_in_the_page_matches_an_ascii_term(self, pdf):
-        font = unicode_font()
-        if font is None:
-            pytest.skip("no installed font carries the dash glyphs")
-        path = pdf([["carry\u2010over and carry\u2013over"]], font_file=font)
-        assert grep_pdf(path, "carry-over", use_cache=False)["counts"] == {"carry-over": 2}
+    def test_unicode_hyphen_in_the_page_matches_an_ascii_term(self, pdf, glyph_font):
+        path = pdf([["carry\u2010over, carry\u2013over, carry\u2014over and carry\u2015over"]],
+                   font_buffer=glyph_font)
+        assert grep_pdf(path, "carry-over", use_cache=False)["counts"] == {"carry-over": 4}
 
     def test_hyphenated_line_break_matches_the_joined_word(self, pdf):
         path = pdf([["the gas pres-", "sure rise here"]])
         result = grep_pdf(path, "pressure", use_cache=False)
         assert result["counts"] == {"pressure": 1}
         assert "[[pressure]]" in result["pages"][0]["snippets"][0]["text"]
+
+    def test_leading_hyphen_of_a_term_is_kept(self, pdf):
+        """"-40" is a negative number: it must not find every plain "40"."""
+        path = pdf([["from -40 to 40 and 140, carry-over"]])
+        assert grep_pdf(path, "-40", use_cache=False)["total_hits"] == 1
+        assert grep_pdf(path, "40", use_cache=False)["total_hits"] == 3
+        assert grep_pdf(path, "-40 to 40", use_cache=False)["total_hits"] == 1
+        assert grep_pdf(path, "carry-", use_cache=False)["total_hits"] == 1
+        assert grep_pdf(path, "-", use_cache=False)["total_hits"] == 2
+
+    def test_line_break_after_a_hyphen_keeps_a_capitalised_compound_findable(self, pdf):
+        path = pdf([["the Navier-", "Stokes equations, and pres-", "sure rise"]])
+        assert grep_pdf(path, "Navier-Stokes", use_cache=False)["total_hits"] == 1
+        assert grep_pdf(path, "navier stokes", use_cache=False)["total_hits"] == 1
+        result = grep_pdf(path, ["NavierStokes", "pressure"], use_cache=False)
+        assert result["counts"] == {"NavierStokes": 0, "pressure": 1}
+        text = grep_pdf(path, "Navier-Stokes", context=8, use_cache=False)["pages"][0]["snippets"][0]["text"]
+        assert "[[Navier-Stokes]]" in text
 
     def test_match_is_case_insensitive(self, pdf):
         path = pdf([["Flow FLOW flow"]])
@@ -259,6 +278,15 @@ class TestSnippets:
         assert grep_pdf(path, "flow", pages=[(2, 99)], use_cache=False)["counts"] == {"flow": 1}
         with pytest.raises(ValueError, match="out of range"):
             grep_pdf(path, "flow", pages=[(3, 4)], use_cache=False)
+
+    def test_cache_off_page_filter_opens_the_pdf_once_per_run(self, pdf, monkeypatch):
+        path = pdf([["flow"]] * 8)
+        calls = []
+        real = pdf_grep._extract_range
+        monkeypatch.setattr(pdf_grep, "_extract_range", lambda p, a, b: calls.append((a, b)) or real(p, a, b))
+        result = grep_pdf(path, "flow", pages=[(2, 4), (7, 7)], use_cache=False)
+        assert calls == [(1, 4), (6, 7)]
+        assert [row["page"] for row in result["pages"]] == [2, 3, 4, 7]
 
     def test_page_filter_applies_on_a_warm_cache_too(self, pdf):
         path = pdf([["flow"], ["flow"], ["flow"]])
@@ -408,7 +436,10 @@ class _InlinePool:
 
 
 class _BrokenPool:
+    attempts = 0
+
     def __init__(self, *args, **kwargs):
+        _BrokenPool.attempts += 1
         raise OSError("no semaphores in this sandbox")
 
 
@@ -423,10 +454,22 @@ class TestPool:
     def expected():
         return sum(n % 3 for n in range(1, 161))
 
-    def test_serial_below_the_threshold(self, pdf, monkeypatch):
-        monkeypatch.setattr(pdf_grep, "ProcessPoolExecutor", _BrokenPool)
-        result = grep_pdf(pdf([["flow"]] * 10), "flow", use_cache=False)  # would raise if a pool were built
-        assert result["total_hits"] == 10
+    @pytest.mark.parametrize("pages, pooled", [(10, False), (150, False), (151, True)])
+    def test_pool_only_above_the_threshold(self, pdf, monkeypatch, pages, pooled):
+        _InlinePool.ranges = []
+        monkeypatch.setattr(pdf_grep, "ProcessPoolExecutor", _InlinePool)
+        result = grep_pdf(pdf([["flow"]] * pages, width=612), "flow", use_cache=False)
+        assert result["total_hits"] == pages
+        assert bool(_InlinePool.ranges) is pooled
+
+    def test_cache_off_page_filter_pools_only_a_large_selection(self, big_pdf, monkeypatch):
+        _InlinePool.ranges = []
+        monkeypatch.setattr(pdf_grep, "ProcessPoolExecutor", _InlinePool)
+        grep_pdf(big_pdf, "flow", pages=[(1, 20)], use_cache=False)
+        assert _InlinePool.ranges == []
+        result = grep_pdf(big_pdf, "flow", pages=[(1, 155)], use_cache=False)
+        assert _InlinePool.ranges
+        assert result["pages"][-1]["page"] <= 155
 
     def test_large_pdf_is_split_across_workers_in_page_order(self, big_pdf, monkeypatch):
         _InlinePool.ranges = []
@@ -439,8 +482,10 @@ class TestPool:
         assert [row["page"] for row in result["pages"]][:4] == [1, 2, 4, 5]
 
     def test_pool_failure_falls_back_to_serial_with_correct_counts(self, big_pdf, monkeypatch):
+        _BrokenPool.attempts = 0
         monkeypatch.setattr(pdf_grep, "ProcessPoolExecutor", _BrokenPool)
         result = grep_pdf(big_pdf, "flow", use_cache=False)
+        assert _BrokenPool.attempts == 1  # the pool was tried, then serial took over
         assert result["counts"] == {"flow": self.expected()}
         assert result["page_count"] == 160
 
@@ -456,6 +501,11 @@ class TestPool:
         assert result["counts"] == {"flow": self.expected()}
 
     def test_real_process_pool_matches_a_serial_pass(self, big_pdf):
+        try:  # the fallback would hide a pool that never ran, so call the pool path directly
+            direct = pdf_grep._extract_parallel(big_pdf, 160, 2)
+        except (OSError, ImportError) as exc:
+            pytest.skip(f"this sandbox cannot start a process pool: {exc}")
+        assert direct == pdf_grep._extract_range(big_pdf, 0, 160)
         pooled = grep_pdf(big_pdf, "flow", use_cache=False, jobs=2)
         assert pooled["counts"] == {"flow": self.expected()}
         assert pooled["pages"][0]["page"] == 1 and pooled["pages"][-1]["page"] == 160
