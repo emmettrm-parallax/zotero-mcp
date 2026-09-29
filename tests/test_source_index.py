@@ -422,6 +422,49 @@ def test_render_fails_when_part_one_or_a_fact_cannot_fit():
         si.render_index_notes(huge, max_chars=30_000)
 
 
+def test_no_later_part_is_ever_empty():
+    """A part exists only to hold an entry: sweep the limit across every packing boundary."""
+    for n_facts in (0, 1, 5):
+        index = with_facts(wide_index(120, 40, 3), big_index(n_facts)["facts"] if n_facts else [])
+        laid_out = 0
+        for max_chars in range(6_000, 40_000, 311):
+            try:
+                notes = si.render_index_notes(index, max_chars=max_chars)
+            except ValueError:
+                continue
+            laid_out += 1
+            assert all(len(n) <= max_chars for n in notes)
+            for k, data in enumerate(block_of_parts(notes)[1:], start=2):
+                assert any(data[name] for name in ("tables_figures", "equations", "vocabulary", "gaps", "facts")), \
+                    f"part {k} of {len(notes)} holds no entry at max_chars={max_chars}"
+        assert laid_out > 50
+
+
+@pytest.mark.parametrize("block, entry", [
+    ("vocabulary", {"term": "t", "kind": "term", "symbol": None, "meaning": "m" * 20_000, "variants": [],
+                    "pages": [1]}),
+    ("gaps", {"id": "G9", "page": 1, "section_id": None, "kind": "other", "note": "n" * 20_000}),
+    ("tables_figures", {"id": "T9", "label": "l", "kind": "table", "caption": "c" * 20_000, "page": 1,
+                        "section_id": "S01", "extracted": "full", "fact_ids": []}),
+    ("equations", {"id": "E9", "label": None, "page": 1, "section_id": "S01", "latex": "l" * 20_000,
+                   "variables": [], "validity": None, "fact_ids": []}),
+])
+def test_render_fails_for_any_block_entry_too_big_for_a_part(block, entry):
+    index = small_index(3)
+    index[block].append(entry)
+    with pytest.raises(ValueError, match=rf"{block} entry .* more than one part"):
+        si.render_index_notes(index, max_chars=10_000)
+
+
+def test_push_reports_a_block_entry_too_big_for_a_part_as_invalid_index(zotero, monkeypatch):
+    monkeypatch.setattr(si, "DEFAULT_MAX_CHARS", 10_000)
+    index = small_index(3)
+    index["gaps"].append({"id": "G9", "page": 1, "section_id": None, "kind": "other", "note": "n" * 20_000})
+    with pytest.raises(si.SourceIndexError, match="gaps entry") as info:
+        push(index)
+    assert info.value.code == "invalid_index" and zotero.writes() == []
+
+
 def test_render_needs_a_build_id():
     index = small_index(3)
     index["header"]["build_id"] = ""
