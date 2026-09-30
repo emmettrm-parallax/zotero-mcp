@@ -765,7 +765,7 @@ def _format_index_show(data: dict) -> str:
 
 
 def _fact_lead_line(fact: dict) -> str:
-    """`p5 F0012 quantity = value unit (condition) [ref]`; a null part is left out."""
+    """`p5 F0012 quantity = value unit (condition) [ref]`. A null part is left out."""
     def shown(key):
         value = fact.get(key)
         return "-" if value is None else value
@@ -825,7 +825,7 @@ def _filter_with_section(report: dict, section) -> dict:
 
 #: What `index show` applies when a filter flag is on and `--limit` is not. The
 #: parser cannot import `index_grep`, which loads only when a command runs, so
-#: this mirrors `index_grep.SHOW_LIMIT`; a test compares the two.
+#: this mirrors `index_grep.SHOW_LIMIT`. A test compares the two.
 _INDEX_SHOW_LIMIT = 40
 
 #: The entry lists of an index that `index search` returns for each item.
@@ -2240,7 +2240,7 @@ def main():
         sys.exit(1)
 
     if args.command != "index":
-        # The index commands never import pymupdf; skipping it saves 0.16 s a call.
+        # The index commands never import pymupdf. The skip saves 0.16 s a call.
         _keep_pymupdf_off_stdout()
     try:
         handler(args)

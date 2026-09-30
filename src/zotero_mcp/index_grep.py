@@ -50,8 +50,8 @@ from zotero_mcp.text_match import BadRegexError, compile_term, normalize_text
 
 KINDS = ("facts", "vocabulary", "tables_figures", "equations", "gaps")
 MAX_EXPAND_ENTRIES = 25  # a user term that matches more vocabulary entries is not expanded
-REPORT_EXPANDED_CAP = 80  # expanded_terms in the report; expanded_total keeps the full count
-HIT_CAP = 3  # "hit" lists at most this many terms; the rank reads len(hit), so it stops at this number
+REPORT_EXPANDED_CAP = 80  # expanded_terms in the report. expanded_total keeps the full count
+HIT_CAP = 3  # "hit" lists at most this many terms. The rank reads len(hit), so it stops at this number
 SHOW_LIMIT = 40  # entries per kind, index show
 SEARCH_LIMIT = 10  # entries per kind, index search
 

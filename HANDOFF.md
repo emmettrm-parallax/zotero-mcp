@@ -63,3 +63,4 @@ New: `index show` filters an index. Example: `zotero-cli --json index show 3CKPN
 New: `index search` reads every indexed item. Example: `zotero-cli --json index search "windback,leakage" --expand`.
 New error code: `bad_grep`. It means an empty term list, or `--expand` or `--regex` without `--grep`.
 Remove the worktrees `r3f1` to `r3f3` under `~/Github/zotero-mcp-wt/` after the branch merges.
+Recall study of 2026-09-30, 12 questions, one Sonnet run per cell: the old skill, the filtered calls and the new skill each answered 12 of 12. In the old condition the agents wrote the full index to a file and filtered it. It never reached the context. The filters protect a client with no shell. Next: give the MCP index tool a lead-only default, and give `read` and `grep` a plain-text output.

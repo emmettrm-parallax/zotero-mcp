@@ -38,7 +38,7 @@ _DASHES[0x2212] = "-"
 _TRANSLATE = {**_LIGATURES, **_DASHES}
 _WHITESPACE = re.compile(r"\s+")
 _LINE_HYPHEN = re.compile(r"(?<=[^\W\d_])-[^\S\n]*\n\s*(?=[^\W\d_])")
-# A literal term splits on whitespace and hyphens; the pieces are re-joined with _JOINER.
+# A literal term splits on whitespace and hyphens. The pieces are joined again with _JOINER.
 _TOKEN_SPLIT = re.compile(r"[\s\-]+")
 _JOINER = r"[\s\-]*"
 
@@ -50,7 +50,7 @@ class BadRegexError(ValueError):
 
 
 def _join_line_hyphen(match: re.Match) -> str:
-    """Drop the hyphen before a lowercase letter (a split word); keep it before any other letter."""
+    """Drop the hyphen before a lowercase letter (a split word). Keep it before any other letter."""
     return "" if match.string[match.end()].islower() else "-"
 
 
