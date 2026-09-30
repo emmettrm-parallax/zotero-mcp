@@ -561,7 +561,7 @@ def parse_index_notes(htmls) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Zotero access: find, push, show
+# Zotero access: find, push, show, list
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -579,12 +579,12 @@ def _first_h1_text(note_html: str) -> str:
     return " ".join(html.unescape(re.sub(r"<[^>]+>", "", match.group(1))).split())
 
 
-def _find_index_notes(parent_key: str, ctx) -> list[_IndexNote]:
-    """The index notes under a parent, in part order (an h1 of ``Source index`` opens each)."""
-    from zotero_mcp import library as _library
+def _pick_index_notes(children: dict[str, list[dict]], parent_key: str) -> list[_IndexNote]:
+    """The index notes of one parent in a ``get_children`` result, in part order.
 
-    backend = _library.get_library_backend()
-    children = backend.get_children([parent_key], item_type="note")
+    An h1 of ``Source index`` opens each note, and a trashed note is skipped.
+    A parent that is absent from ``children`` raises ``error`` (no such item).
+    """
     if parent_key not in children:
         raise SourceIndexError(f"cannot list the notes of item {parent_key}: no such item?", "error")
     found = []
@@ -602,6 +602,14 @@ def _find_index_notes(parent_key: str, ctx) -> list[_IndexNote]:
             ))
     found.sort(key=lambda n: (n.part, n.added, n.key))
     return found
+
+
+def _find_index_notes(parent_key: str, ctx) -> list[_IndexNote]:
+    """The index notes under a parent, in part order (an h1 of ``Source index`` opens each)."""
+    from zotero_mcp import library as _library
+
+    backend = _library.get_library_backend()
+    return _pick_index_notes(backend.get_children([parent_key], item_type="note"), parent_key)
 
 
 def _counts(index: dict) -> dict[str, int]:
@@ -706,14 +714,8 @@ def _filter_section(index: dict, section: str) -> dict:
     return filtered
 
 
-def show_index(parent_key, *, section=None, ctx) -> dict:
-    """Read the index of ``parent_key``: ``{item_key, note_keys, parts, index}``.
-
-    ``section`` (for example ``S03``) filters the index to that section's facts,
-    tables_figures, equations and gaps, plus the header, the vocabulary and that
-    one section entry. Raises ``no_index`` when the item has none.
-    """
-    notes = _find_index_notes(parent_key, ctx)
+def _read_index(parent_key: str, notes: list[_IndexNote], section=None) -> dict:
+    """Build the ``show_index`` result from index notes already found. Raise ``no_index`` when there are none."""
     if not notes:
         raise SourceIndexError(f"item {parent_key} has no source index", "no_index")
     index = parse_index_notes([n.html for n in notes])
@@ -725,3 +727,50 @@ def show_index(parent_key, *, section=None, ctx) -> dict:
         "parts": len(notes),
         "index": index,
     }
+
+
+def show_index(parent_key, *, section=None, ctx) -> dict:
+    """Read the index of ``parent_key``: ``{item_key, note_keys, parts, index}``.
+
+    ``section`` (for example ``S03``) filters the index to that section's facts,
+    tables_figures, equations and gaps, plus the header, the vocabulary and that
+    one section entry. Raises ``no_index`` when the item has none.
+    """
+    return _read_index(parent_key, _find_index_notes(parent_key, ctx), section)
+
+
+def show_indexes(parent_keys, *, ctx) -> dict[str, dict]:
+    """Read the indexes of many parents with ONE ``get_children`` call.
+
+    Returns ``{key: result}`` in the order of ``parent_keys`` (a repeated key
+    counts once). ``result`` is the ``show_index`` dict of that key, or
+    ``{"error": {"code", "message"}}`` when that key fails: ``no_index``,
+    ``invalid_index`` or ``error`` (no such item). One bad key never stops the
+    others. No key at all makes no backend call.
+    """
+    from zotero_mcp import library as _library
+
+    keys = list(dict.fromkeys(parent_keys))
+    if not keys:
+        return {}
+    children = _library.get_library_backend().get_children(keys, item_type="note")
+    results: dict[str, dict] = {}
+    for key in keys:
+        try:
+            results[key] = _read_index(key, _pick_index_notes(children, key))
+        except SourceIndexError as exc:
+            results[key] = {"error": {"code": exc.code, "message": str(exc)}}
+    return results
+
+
+def list_items_with_tag(tag: str, *, limit: int = 1000) -> list[str]:
+    """Keys of the top-level items that carry ``tag``, in the order the backend returns them.
+
+    One backend query, so it is fast where the tool-layer tag search is not.
+    Attachments are left out. ``limit`` caps the count the backend returns.
+    """
+    from zotero_mcp import library as _library
+
+    items = _library.get_library_backend().search_items("", item_type="-attachment", tag=[tag], limit=limit)
+    keys = [item.get("key") or item.get("data", {}).get("key", "") for item in items]
+    return [key for key in keys if key]

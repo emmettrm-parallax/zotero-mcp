@@ -1,9 +1,9 @@
-"""Tests for zotero_mcp.source_index: validate, render, parse, push and show.
+"""Tests for zotero_mcp.source_index: validate, render, parse, push, show and list.
 
 Every Zotero call is mocked. The fake below stands in for the library backend
-(``get_children``) and for the note and tag tool functions, and keeps notes in
-memory, so push and show run their real logic against a store that behaves like
-Zotero for the calls they make.
+(``get_children``, ``search_items``) and for the note and tag tool functions, and
+keeps notes in memory, so push, show and list run their real logic against a
+store that behaves like Zotero for the calls they make.
 """
 
 import copy
@@ -627,11 +627,12 @@ class Ctx:
 
 
 class FakeZotero:
-    """Child notes in memory, plus the four functions push and show call."""
+    """Child notes and tagged items in memory, plus the functions push, show and list call."""
 
     def __init__(self):
         self.notes: dict[str, dict] = {}
         self.trashed: dict[str, dict] = {}
+        self.tagged: dict[str, list[str]] = {}   # tag -> item keys, in the order the backend returns them
         self.calls: list[tuple] = []
         self.tag_calls: list[tuple] = []
         self.tag_result = "# Batch Tag Update Results\n\nItems updated: 1"
@@ -657,6 +658,13 @@ class FakeZotero:
         assert item_type == "note"
         return {k: [copy.deepcopy(n) for n in self.notes.values() if n["data"]["parentItem"] == k]
                 for k in keys if k in self.parents}
+
+    def search_items(self, query, **kwargs):
+        self.calls.append(("search_items", query, kwargs))
+        assert query == "" and kwargs["item_type"] == "-attachment"
+        (tag,) = kwargs["tag"]
+        return [{"key": k, "data": {"key": k, "itemType": "journalArticle"}}
+                for k in self.tagged.get(tag, [])[:kwargs["limit"]]]
 
     # note tools
     def create_note(self, item_key, note_title, note_text, tags=None, *, ctx):
@@ -1016,3 +1024,159 @@ def test_push_through_the_real_note_tools_stores_the_html_unchanged(zotero_reads
     result = push(sample_index(), replace=True)
     assert stored["data"]["note"] == si.render_index_notes(sample_index())[0]
     assert result["updated"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Batch reads: list_items_with_tag and show_indexes
+# ---------------------------------------------------------------------------
+
+def index_item(zotero, key, index):
+    """Give the fake an item ``key`` whose notes hold ``index``; returns the note keys."""
+    zotero.parents.add(key)
+    htmls = si.render_index_notes(index, max_chars=si.DEFAULT_MAX_CHARS)      # small_parts patches the constant
+    return [zotero.add_note(html, parent=key) for html in htmls]
+
+
+def calls_of(zotero, name):
+    return [c for c in zotero.calls if c[0] == name]
+
+
+def test_list_items_with_tag_asks_the_backend_once_for_top_level_items(zotero):
+    zotero.tagged["status/indexed"] = ["KEYAAA01"]
+    assert si.list_items_with_tag("status/indexed") == ["KEYAAA01"]
+    assert zotero.calls == [
+        ("search_items", "", {"item_type": "-attachment", "tag": ["status/indexed"], "limit": 1000}),
+    ]
+
+
+def test_list_items_with_tag_keeps_the_backend_order(zotero):
+    zotero.tagged["status/indexed"] = ["ZZZZ0001", "AAAA0001", "MMMM0001", "BBBB0001"]
+    assert si.list_items_with_tag("status/indexed") == ["ZZZZ0001", "AAAA0001", "MMMM0001", "BBBB0001"]
+
+
+def test_list_items_with_tag_passes_the_limit_and_the_tag(zotero):
+    zotero.tagged["other"] = ["K0000001", "K0000002", "K0000003"]
+    assert si.list_items_with_tag("other", limit=2) == ["K0000001", "K0000002"]
+    assert zotero.calls[-1][2] == {"item_type": "-attachment", "tag": ["other"], "limit": 2}
+
+
+def test_list_items_with_tag_with_no_match_is_empty(zotero):
+    assert si.list_items_with_tag("status/indexed") == []
+
+
+def test_list_items_with_tag_reads_the_key_from_data_when_the_item_has_none_on_top(zotero, monkeypatch):
+    monkeypatch.setattr(zotero, "search_items", lambda query, **kw: [
+        {"data": {"key": "KEYAAA01"}}, {"key": "KEYBBB01"}, {"data": {}}, {},
+    ])
+    assert si.list_items_with_tag("status/indexed") == ["KEYAAA01", "KEYBBB01"]
+
+
+def test_show_indexes_makes_one_get_children_call_for_all_keys(zotero, small_parts):
+    index_item(zotero, "ITEM0001", small_index(3))
+    index_item(zotero, "ITEM0002", sample_index())
+    index_item(zotero, "ITEM0003", small_parts)
+    results = si.show_indexes(["ITEM0001", "ITEM0002", "ITEM0003"], ctx=Ctx())
+    assert zotero.calls == [("get_children", ("ITEM0001", "ITEM0002", "ITEM0003"), "note")]
+    assert list(results) == ["ITEM0001", "ITEM0002", "ITEM0003"]
+
+
+def test_show_indexes_results_equal_show_index_per_key(zotero, small_parts):
+    index_item(zotero, "ITEM0001", small_index(3))
+    index_item(zotero, "ITEM0002", sample_index())
+    index_item(zotero, "ITEM0003", small_parts)
+    zotero.notes = dict(reversed(list(zotero.notes.items())))      # the parts come back out of order
+    results = si.show_indexes(["ITEM0001", "ITEM0002", "ITEM0003"], ctx=Ctx())
+    assert results["ITEM0003"]["parts"] > 2
+    for key in results:
+        assert results[key] == si.show_index(key, ctx=Ctx())
+    assert results["ITEM0002"]["index"] == sample_index()
+    assert results["ITEM0003"]["index"] == small_parts
+
+
+def test_show_indexes_follow_the_order_of_the_keys_not_the_backend(zotero):
+    index_item(zotero, "ITEM0001", small_index(3))
+    index_item(zotero, "ITEM0002", sample_index())
+    assert list(si.show_indexes(["ITEM0002", "ITEM0001"], ctx=Ctx())) == ["ITEM0002", "ITEM0001"]
+
+
+def test_show_indexes_ignore_trashed_notes(zotero):
+    [note_key] = index_item(zotero, "ITEM0001", small_index(3))
+    stale = zotero.add_note(zotero.html_of(note_key).replace("part 1/1", "part 1/2"), parent="ITEM0001")
+    zotero.notes[stale]["data"]["deleted"] = 1
+    assert si.show_indexes(["ITEM0001"], ctx=Ctx())["ITEM0001"]["index"] == small_index(3)
+
+
+def test_show_indexes_report_no_index_per_key(zotero):
+    index_item(zotero, "ITEM0001", small_index(3))
+    zotero.parents.update({"ITEM0002", "ITEM0003"})
+    zotero.add_note("<h1>Something else</h1><p>x</p>", parent="ITEM0002")        # a note, but not an index
+    results = si.show_indexes(["ITEM0001", "ITEM0002", "ITEM0003"], ctx=Ctx())     # ITEM0003 has no notes
+    assert results["ITEM0001"] == si.show_index("ITEM0001", ctx=Ctx())
+    for key in ("ITEM0002", "ITEM0003"):
+        assert results[key] == {"error": {"code": "no_index", "message": f"item {key} has no source index"}}
+
+
+def test_show_indexes_report_a_missing_part_as_invalid_index_per_key(zotero, small_parts):
+    index_item(zotero, "ITEM0001", small_index(3))
+    broken = index_item(zotero, "ITEM0002", small_parts)
+    zotero.notes.pop(broken[1])
+    results = si.show_indexes(["ITEM0002", "ITEM0001"], ctx=Ctx())
+    assert results["ITEM0001"]["index"] == small_index(3)
+    assert set(results["ITEM0002"]) == {"error"}
+    assert results["ITEM0002"]["error"]["code"] == "invalid_index"
+    assert "missing part" in results["ITEM0002"]["error"]["message"]
+
+
+def test_show_indexes_report_an_unknown_key_as_error_per_key(zotero):
+    index_item(zotero, "ITEM0001", small_index(3))
+    results = si.show_indexes(["NOSUCH01", "ITEM0001"], ctx=Ctx())
+    assert results["ITEM0001"]["index"] == small_index(3)
+    assert results["NOSUCH01"]["error"]["code"] == "error"
+    assert "NOSUCH01" in results["NOSUCH01"]["error"]["message"]
+
+
+def test_show_indexes_one_call_holds_every_kind_of_failure_and_a_good_key(zotero, small_parts):
+    index_item(zotero, "GOOD0001", sample_index())
+    zotero.parents.add("EMPTY001")
+    broken = index_item(zotero, "BROKEN01", small_parts)
+    zotero.notes.pop(broken[1])
+    keys = ["EMPTY001", "GOOD0001", "NOSUCH01", "BROKEN01"]
+    results = si.show_indexes(keys, ctx=Ctx())
+
+    assert calls_of(zotero, "get_children") == [("get_children", tuple(keys), "note")]
+    assert list(results) == keys
+    assert results["GOOD0001"] == si.show_index("GOOD0001", ctx=Ctx())
+    for key, code in (("EMPTY001", "no_index"), ("NOSUCH01", "error"), ("BROKEN01", "invalid_index")):
+        with pytest.raises(si.SourceIndexError) as info:                       # same failure as show_index
+            si.show_index(key, ctx=Ctx())
+        assert info.value.code == code
+        assert results[key] == {"error": {"code": code, "message": str(info.value)}}
+
+
+def test_show_indexes_with_no_keys_makes_no_backend_call(zotero):
+    assert si.show_indexes([], ctx=Ctx()) == {}
+    assert zotero.calls == []
+
+
+def test_show_indexes_ask_once_for_a_repeated_key(zotero):
+    index_item(zotero, "ITEM0001", small_index(3))
+    results = si.show_indexes(["ITEM0001", "ITEM0001"], ctx=Ctx())
+    assert list(results) == ["ITEM0001"]
+    assert zotero.calls == [("get_children", ("ITEM0001",), "note")]
+
+
+def test_show_indexes_never_write(zotero):
+    index_item(zotero, "ITEM0001", small_index(3))
+    zotero.calls.clear()
+    si.show_indexes(["ITEM0001"], ctx=Ctx())
+    assert zotero.writes() == []
+
+
+def test_the_tagged_items_read_in_two_backend_calls(zotero):
+    index_item(zotero, "ITEM0001", small_index(3))
+    index_item(zotero, "ITEM0002", sample_index())
+    zotero.tagged["status/indexed"] = ["ITEM0002", "ITEM0001"]
+    keys = si.list_items_with_tag("status/indexed")
+    results = si.show_indexes(keys, ctx=Ctx())
+    assert [c[0] for c in zotero.calls] == ["search_items", "get_children"]
+    assert list(results) == ["ITEM0002", "ITEM0001"]
