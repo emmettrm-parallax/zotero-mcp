@@ -6,7 +6,9 @@ without reading the whole document: page text is extracted once, normalised,
 cached on disk, and searched with a regular expression.
 
 Normalisation (``NORMALIZER_VERSION``) is what makes a plain term find what a
-person sees on the page:
+person sees on the page. ``normalize_text`` and ``compile_term`` live in ``zotero_mcp.text_match``
+(stdlib only, so the source-index search can use them without pymupdf); bump ``NORMALIZER_VERSION``
+on any change there:
 
 - MuPDF expands ligature glyphs itself (``TEXT_PRESERVE_LIGATURES`` is off); the
   U+FB00-U+FB06 code points are expanded again for fonts that map them by hand.
@@ -43,7 +45,10 @@ from pathlib import Path
 
 import pymupdf
 
-# Bump when the extraction flags or the normalisation change: it invalidates every cache entry.
+from zotero_mcp.text_match import BadRegexError, compile_term, normalize_text
+
+# Bump when the extraction flags or the normalisation (zotero_mcp.text_match) change: it invalidates
+# every cache entry.
 NORMALIZER_VERSION = 2
 
 POOL_MIN_PAGES = 150  # serial extraction is faster below this; spawning workers has a fixed cost
@@ -51,42 +56,6 @@ MARK_OPEN = "[["
 MARK_CLOSE = "]]"
 
 _TEXT_FLAGS = (pymupdf.TEXTFLAGS_TEXT & ~pymupdf.TEXT_PRESERVE_LIGATURES) | pymupdf.TEXT_DEHYPHENATE
-
-_LIGATURES = {
-    0xFB00: "ff",
-    0xFB01: "fi",
-    0xFB02: "fl",
-    0xFB03: "ffi",
-    0xFB04: "ffl",
-    0xFB05: "st",
-    0xFB06: "st",
-}
-_DASHES = {code: "-" for code in range(0x2010, 0x2016)}
-_DASHES[0x2212] = "-"
-_TRANSLATE = {**_LIGATURES, **_DASHES}
-_WHITESPACE = re.compile(r"\s+")
-_LINE_HYPHEN = re.compile(r"(?<=[^\W\d_])-[^\S\n]*\n\s*(?=[^\W\d_])")
-# A literal term splits on whitespace and hyphens; the pieces are re-joined with _JOINER.
-_TOKEN_SPLIT = re.compile(r"[\s\-]+")
-_JOINER = r"[\s\-]*"
-
-
-class BadRegexError(ValueError):
-    """A term that cannot be compiled (or is empty). ``code`` is the CLI error code."""
-
-    code = "bad_regex"
-
-
-def _join_line_hyphen(match: re.Match) -> str:
-    """Drop the hyphen before a lowercase letter (a split word); keep it before any other letter."""
-    return "" if match.string[match.end()].islower() else "-"
-
-
-def normalize_text(text: str) -> str:
-    """Ligatures expanded, dashes unified, line-end hyphens joined, whitespace collapsed. Never NFKC."""
-    text = _LINE_HYPHEN.sub(_join_line_hyphen, text.translate(_TRANSLATE))
-    return _WHITESPACE.sub(" ", text).strip()
-
 
 # ---------------------------------------------------------------------------
 # Page text: extraction and cache
@@ -205,23 +174,7 @@ def _cache_write(cache_file: Path | None, texts: list[str], labels: list[str]) -
 # ---------------------------------------------------------------------------
 
 def _compile_term(term: str, *, regex: bool, word: bool) -> re.Pattern:
-    if not term or not term.strip():
-        raise BadRegexError("Empty search term")
-    if regex:
-        body = term
-    else:
-        plain = normalize_text(term)
-        tokens = [re.escape(tok) for tok in _TOKEN_SPLIT.split(plain) if tok]
-        if not tokens:  # a term made only of dashes and spaces
-            body = re.escape(plain)
-        else:  # an edge hyphen is literal: "-40" must not find every "40"
-            body = ("-" if plain.startswith("-") else "") + _JOINER.join(tokens) + ("-" if plain.endswith("-") else "")
-    if word:
-        body = rf"(?<!\w)(?:{body})(?!\w)"
-    try:
-        return re.compile(body, re.IGNORECASE)
-    except re.error as exc:
-        raise BadRegexError(f"Invalid regular expression {term!r}: {exc}") from exc
+    return compile_term(term, regex=regex, word=word)
 
 
 def _page_ranges(pages, page_count: int) -> list[int] | None:
