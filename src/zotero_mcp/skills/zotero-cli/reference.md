@@ -146,6 +146,12 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--chunk-pages` -- default `8` -- Longest section in pages; also the chunk size with no outline
  - `--inventory` -- List the tables, figures and equations in each section
 
+## `tables`
+
+ - `<key>` -- Item key or PDF attachment key
+ - `--pages` -- **required** -- Pages to read: all, 3, 3-6, or 1,4,6-9
+ - `--strategy` -- one of `lines`, `text` -- default `lines` -- lines finds ruled tables; text finds tables under a 'Table N' caption that have no ruled cells
+
 ## `index`
 
 ### `index push`
@@ -153,13 +159,14 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `<key>` -- Item key or PDF attachment key
  - `--from` -- **required** -- Index JSON file; - reads stdin
  - `--replace` -- Replace the item's existing index instead of failing
- - `--tags` -- Comma-separated tags for the index notes
+ - `--tags` -- Comma-separated tags to add to the parent item
  - `--dry-run` -- Report what would be written, without writing
 
 ### `index show`
 
  - `<key>` -- Item key or PDF attachment key
  - `--section` -- Only this section (S03) and its entries
+ - `--pages` -- Only entries on these pages: 3, 3-6, or 1,4,6-9 (with --section, both apply)
 
 ## `notes (alias: n)`
 

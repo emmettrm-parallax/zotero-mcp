@@ -1,7 +1,7 @@
-"""`zotero-cli grep`, `sections` and `index`, and the PDF key resolver under them.
+"""`zotero-cli grep`, `sections`, `tables` and `index`, and the PDF key resolver under them.
 
-The engines behind these commands (`pdf_grep`, `pdf_sections`, `source_index`)
-are separate modules. These tests replace them with fakes injected through
+The engines behind these commands (`pdf_grep`, `pdf_sections`, `pdf_tables`,
+`source_index`, `index_slice`) are separate modules. These tests replace them with fakes injected through
 `sys.modules`, so what is pinned here is the wiring alone: which arguments the
 CLI hands each engine, what identity fields it adds to the result, and the
 shape of the JSON envelope and its error codes.
@@ -63,6 +63,18 @@ SECTIONS_RESULT = {
     ],
 }
 
+TABLES_RESULT = {
+    "strategy": "lines",
+    "pages": [
+        {"page": 17, "tables": [
+            {"id": "p17-t1", "bbox": [0.1, 0.2, 0.8, 0.3], "rect_arg": "0.1000,0.2000,0.8000,0.3000",
+             "header": ["Alloy", "Temp (C)"], "rows": [["N07001", "760"], ["N07002", None]],
+             "caption": "Table 2. Test alloys"},
+        ]},
+        {"page": 18, "tables": []},
+    ],
+}
+
 PUSH_RESULT = {
     "item_key": PARENT, "note_keys": ["NOTE0001", "NOTE0002"], "parts": 2, "chars": 210000,
     "created": 2, "updated": 0, "trashed": 0, "dry_run": False,
@@ -94,8 +106,9 @@ def _install(monkeypatch, name, module):
 
 @pytest.fixture
 def fakes(monkeypatch):
-    calls = Fakes(resolved=[], parent_keys=[], grep=[], sections=[], push=[], show=[],
-                  validate=[], errors_for_validate=[])
+    calls = Fakes(resolved=[], parent_keys=[], grep=[], sections=[], tables=[], push=[],
+                  show=[], slice=[], page_counts=[], validate=[], errors_for_validate=[],
+                  pdf_pages=1200, index_pages=40)
 
     grep_mod = types.ModuleType("zotero_mcp.pdf_grep")
 
@@ -114,6 +127,26 @@ def fakes(monkeypatch):
 
     sections_mod.sections_for_pdf = sections_for_pdf
     sections_mod.format_sections_markdown = lambda data: f"SECTIONS-MD {data['key']}"
+
+    tables_mod = types.ModuleType("zotero_mcp.pdf_tables")
+
+    def tables_for_pdf(path, **kwargs):
+        calls.tables.append((path, kwargs))
+        return dict(TABLES_RESULT, strategy=kwargs["strategy"])
+
+    tables_mod.tables_for_pdf = tables_for_pdf
+    tables_mod.format_tables_markdown = lambda data: f"TABLES-MD {data['attachment_key']}"
+
+    slice_mod = types.ModuleType("zotero_mcp.index_slice")
+
+    def filter_index_pages(index, pages):
+        """Raises what the real slice raises; otherwise tags the index with the pages kept."""
+        calls.slice.append((index, pages))
+        if not pages or min(pages) < 1 or max(pages) > calls.index_pages:
+            raise CliError(f"pages outside 1-{calls.index_pages}", code="bad_pages")
+        return {**index, "pages_kept": pages}
+
+    slice_mod.filter_index_pages = filter_index_pages
 
     index_mod = types.ModuleType("zotero_mcp.source_index")
 
@@ -134,6 +167,7 @@ def fakes(monkeypatch):
     index_mod.show_index = show_index
 
     for name, module in (("pdf_grep", grep_mod), ("pdf_sections", sections_mod),
+                         ("pdf_tables", tables_mod), ("index_slice", slice_mod),
                          ("source_index", index_mod)):
         _install(monkeypatch, name, module)
 
@@ -146,8 +180,13 @@ def fakes(monkeypatch):
         calls.parent_keys.append(key)
         return PARENT
 
+    def pdf_page_count(path):
+        calls.page_counts.append(path)
+        return calls.pdf_pages
+
     monkeypatch.setattr(pdf_source, "resolved_pdf", resolved_pdf)
     monkeypatch.setattr(pdf_source, "parent_key", parent_key)
+    monkeypatch.setattr(cli_standalone, "_pdf_page_count", pdf_page_count)
     monkeypatch.setattr(cli_standalone, "setup_zotero_environment", lambda: None)
     monkeypatch.setattr(cli_standalone, "_keep_pymupdf_off_stdout", lambda: None)
     return calls
@@ -198,6 +237,21 @@ class TestParsers:
         assert (args.pages, args.max_level, args.chunk_pages) == ("all", 2, 8)
         assert args.inventory is False
 
+    def test_tables_defaults(self):
+        args = build_parser().parse_args(["tables", "KEY1", "--pages", "17"])
+        assert args.command == "tables"
+        assert (args.key, args.pages, args.strategy) == ("KEY1", "17", "lines")
+
+    def test_tables_needs_pages(self):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["tables", "KEY1"])
+
+    def test_tables_strategy_is_lines_or_text(self):
+        args = build_parser().parse_args(["tables", "KEY1", "--pages", "3", "--strategy", "text"])
+        assert args.strategy == "text"
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["tables", "KEY1", "--pages", "3", "--strategy", "grid"])
+
     def test_index_push_needs_a_source_file(self):
         with pytest.raises(SystemExit):
             build_parser().parse_args(["index", "push", "KEY1"])
@@ -215,6 +269,18 @@ class TestParsers:
     def test_index_show_flags(self):
         args = build_parser().parse_args(["index", "show", "KEY1", "--section", "S03"])
         assert (args.subcommand, args.key, args.section) == ("show", "KEY1", "S03")
+        assert args.pages is None
+
+    def test_index_show_takes_pages(self):
+        args = build_parser().parse_args(
+            ["index", "show", "KEY1", "--section", "S03", "--pages", "665-666"])
+        assert (args.section, args.pages) == ("S03", "665-666")
+
+    def test_index_push_tags_go_on_the_parent_item(self, capsys):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(["index", "push", "--help"])
+        help_text = " ".join(capsys.readouterr().out.split())
+        assert "Comma-separated tags to add to the parent item" in help_text
 
     @pytest.mark.parametrize("argv", [
         ["--json", "index", "show", "KEY1"],
@@ -233,13 +299,15 @@ class TestParsers:
         assert build_parser().parse_args(["index", "show", "KEY1"]).json_out is False
 
     def test_every_new_command_has_a_handler(self):
-        for name in ("grep", "sections", "index"):
+        for name in ("grep", "sections", "tables", "index"):
             assert name in cli_standalone._CMD_MAP
 
     def test_schema_doc_names_the_new_commands(self):
-        for line in ("  grep ", "  sections ", "  index push ", "  index show "):
+        for line in ("  grep ", "  sections ", "  tables ", "  index push ", "  index show "):
             assert line in cli_standalone.JSON_SCHEMA_DOC
-        for code in ("no_pdf_attachment", "bad_regex", "no_index", "index_exists",
+        assert "data.pages[].tables[] -- header, rows, caption, rect_arg" in \
+            cli_standalone.JSON_SCHEMA_DOC
+        for code in ("no_pdf_attachment", "bad_regex", "bad_pages", "no_index", "index_exists",
                      "invalid_index"):
             assert code in cli_standalone.JSON_SCHEMA_DOC
 
@@ -315,6 +383,25 @@ class TestGrep:
         assert body["error"]["code"] == "bad_pages"
         assert fakes.resolved == []
 
+    def test_pages_are_checked_against_the_pdf_before_the_engine_runs(self, fakes, monkeypatch,
+                                                                       capsys):
+        run_json(monkeypatch, capsys, "--json", "grep", "KEY1", "x", "--pages", "1-1200")
+        assert fakes.page_counts == [PDF_PATH]
+        assert len(fakes.grep) == 1
+
+    def test_a_page_past_the_end_is_bad_pages(self, fakes, monkeypatch, capsys):
+        code, body = run_json(monkeypatch, capsys, "--json", "grep", "KEY1", "x",
+                              "--pages", "3,1201")
+        assert code == 1
+        assert (body["ok"], body["error"]["code"]) == (False, "bad_pages")
+        assert "1201" in body["error"]["message"] and "1200" in body["error"]["message"]
+        assert fakes.grep == []
+
+    def test_all_pages_need_no_page_count(self, fakes, monkeypatch, capsys):
+        code, _body = run_json(monkeypatch, capsys, "--json", "grep", "KEY1", "x")
+        assert code == 0
+        assert fakes.page_counts == []
+
     def test_a_key_with_no_pdf_reports_it(self, fakes, monkeypatch, capsys):
         @contextmanager
         def no_pdf(key, ctx):
@@ -371,6 +458,123 @@ class TestSections:
         assert code == 1
         assert body["error"]["code"] == "bad_pages"
         assert fakes.resolved == []
+
+    def test_a_page_past_the_end_is_bad_pages(self, fakes, monkeypatch, capsys):
+        code, body = run_json(monkeypatch, capsys, "--json", "sections", "KEY1",
+                              "--pages", "1190-1201")
+        assert code == 1
+        assert (body["ok"], body["error"]["code"]) == (False, "bad_pages")
+        assert fakes.page_counts == [PDF_PATH]
+        assert fakes.sections == []
+
+    def test_the_last_page_is_in_range(self, fakes, monkeypatch, capsys):
+        code, _body = run_json(monkeypatch, capsys, "--json", "sections", "KEY1",
+                               "--pages", "1200")
+        assert code == 0
+        assert fakes.sections[0][1]["pages"] == [1200]
+
+
+# ---------------------------------------------------------------------------
+# tables
+# ---------------------------------------------------------------------------
+
+class TestTables:
+    def test_envelope_carries_the_attachment_key_and_the_engine_result(self, fakes, monkeypatch,
+                                                                       capsys):
+        code, body = run_json(monkeypatch, capsys, "--json", "tables", ATTACH, "--pages", "17-18")
+        assert code == 0
+        assert (body["ok"], body["command"], body["schema"]) == (True, "tables", 1)
+        data = body["data"]
+        assert list(data) == ["attachment_key", "strategy", "pages"]
+        assert data["attachment_key"] == ATTACH
+        assert data["strategy"] == "lines"
+        assert data["pages"] == TABLES_RESULT["pages"]
+        assert data["pages"][0]["tables"][0]["rows"][1] == ["N07002", None]
+        assert data["pages"][1] == {"page": 18, "tables": []}
+        assert fakes.resolved == [ATTACH]
+
+    def test_the_attachment_key_is_the_resolved_pdfs(self, fakes, monkeypatch, capsys):
+        """An item key in, the PDF's own key out."""
+        _code, body = run_json(monkeypatch, capsys, "--json", "tables", PARENT, "--pages", "17")
+        assert body["data"]["attachment_key"] == ATTACH
+
+    def test_engine_gets_the_documented_defaults(self, fakes, monkeypatch, capsys):
+        run_json(monkeypatch, capsys, "--json", "tables", "KEY1", "--pages", "17")
+        assert fakes.tables == [(PDF_PATH, {"pages": [17], "strategy": "lines"})]
+
+    def test_every_flag_reaches_the_engine(self, fakes, monkeypatch, capsys):
+        code, body = run_json(monkeypatch, capsys, "tables", "KEY1", "--pages", "13,17-18",
+                              "--strategy", "text", "--json")
+        assert code == 0
+        assert fakes.tables == [(PDF_PATH, {"pages": [13, 17, 18], "strategy": "text"})]
+        assert body["data"]["strategy"] == "text"
+
+    def test_all_pages_reach_the_engine_as_none(self, fakes, monkeypatch, capsys):
+        run_json(monkeypatch, capsys, "--json", "tables", "KEY1", "--pages", "all")
+        assert fakes.tables[0][1]["pages"] is None
+        assert fakes.page_counts == []
+
+    def test_markdown_mode_prints_the_engines_markdown(self, fakes, monkeypatch, capsys):
+        code, out, _err = run_cli(monkeypatch, capsys, "tables", "KEY1", "--pages", "17")
+        assert code == 0
+        assert out.strip() == f"TABLES-MD {ATTACH}"
+
+    def test_pages_are_required(self, fakes, monkeypatch, capsys):
+        code, out, err = run_cli(monkeypatch, capsys, "--json", "tables", "KEY1")
+        assert code == 2
+        assert "--pages" in err
+        assert fakes.resolved == [] and fakes.tables == []
+
+    def test_an_unparseable_page_list_fails_before_the_pdf_is_fetched(self, fakes, monkeypatch,
+                                                                       capsys):
+        code, body = run_json(monkeypatch, capsys, "--json", "tables", "KEY1", "--pages", "0")
+        assert code == 1
+        assert (body["ok"], body["error"]["code"]) == (False, "bad_pages")
+        assert fakes.resolved == [] and fakes.tables == []
+
+    def test_a_page_past_the_end_is_bad_pages(self, fakes, monkeypatch, capsys):
+        code, body = run_json(monkeypatch, capsys, "--json", "tables", "KEY1",
+                              "--pages", "1201")
+        assert code == 1
+        assert (body["ok"], body["error"]["code"]) == (False, "bad_pages")
+        assert "1201" in body["error"]["message"]
+        assert fakes.page_counts == [PDF_PATH]
+        assert fakes.tables == []
+
+    def test_a_key_with_no_pdf_reports_it(self, fakes, monkeypatch, capsys):
+        @contextmanager
+        def no_pdf(key, ctx):
+            raise CliError(f"No PDF attachment found for item: {key}", code="no_pdf_attachment")
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(pdf_source, "resolved_pdf", no_pdf)
+        code, body = run_json(monkeypatch, capsys, "--json", "tables", "NOPDF001", "--pages", "1")
+        assert code == 1
+        assert body["error"]["code"] == "no_pdf_attachment"
+        assert fakes.tables == []
+
+
+class TestCheckPages:
+    """The range check that grep, sections and tables share."""
+
+    @pytest.mark.parametrize("pages", [[], [0], [-3, 4]])
+    def test_an_empty_list_or_a_page_below_one_never_opens_the_pdf(self, fakes, pages):
+        with pytest.raises(CliError) as caught:
+            cli_standalone._check_pages(pages, PDF_PATH)
+        assert caught.value.code == "bad_pages"
+        assert fakes.page_counts == []
+
+    def test_a_page_past_the_count_is_refused(self, fakes):
+        fakes.pdf_pages = 40
+        cli_standalone._check_pages([1, 40], PDF_PATH)
+        with pytest.raises(CliError) as caught:
+            cli_standalone._check_pages([1, 41], PDF_PATH)
+        assert caught.value.code == "bad_pages"
+        assert "41" in str(caught.value) and "40" in str(caught.value)
+
+    def test_none_is_every_page(self, fakes):
+        cli_standalone._check_pages(None, PDF_PATH)
+        assert fakes.page_counts == []
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +689,56 @@ class TestIndexShow:
     def test_section_reaches_the_engine(self, fakes, monkeypatch, capsys):
         run_json(monkeypatch, capsys, "index", "show", "KEY1", "--section", "S03", "--json")
         assert fakes.show[0][1]["section"] == "S03"
+
+    def test_without_pages_the_index_is_not_sliced(self, fakes, monkeypatch, capsys):
+        run_json(monkeypatch, capsys, "--json", "index", "show", "KEY1")
+        run_json(monkeypatch, capsys, "--json", "index", "show", "KEY1", "--pages", "all")
+        assert fakes.slice == []
+
+    def test_pages_slice_the_index_after_it_is_read(self, fakes, monkeypatch, capsys):
+        code, body = run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH,
+                              "--pages", "3-5,9")
+        assert code == 0
+        assert (body["ok"], body["command"]) == (True, "index show")
+        assert fakes.slice == [(SHOW_RESULT["index"], [3, 4, 5, 9])]
+        data = body["data"]
+        assert list(data) == ["item_key", "note_keys", "parts", "index"]
+        assert data["index"] == {**SHOW_RESULT["index"], "pages_kept": [3, 4, 5, 9]}
+        assert {k: v for k, v in data.items() if k != "index"} == \
+            {k: v for k, v in SHOW_RESULT.items() if k != "index"}
+
+    def test_section_and_pages_compose(self, fakes, monkeypatch, capsys):
+        """The section is cut first, then the pages: the slice gets the section's index."""
+        fakes.index_pages = 1200
+        cut = dict(SHOW_RESULT, index={"schema": "source-index/v1", "facts": [], "only": "S03"})
+        with patch.object(sys.modules["zotero_mcp.source_index"], "show_index",
+                          return_value=cut) as show:
+            code, body = run_json(monkeypatch, capsys, "--json", "index", "show", "KEY1",
+                                  "--section", "S03", "--pages", "665-666")
+        assert code == 0
+        assert show.call_args.kwargs["section"] == "S03"
+        assert fakes.slice == [(cut["index"], [665, 666])]
+        assert body["data"]["index"] == {**cut["index"], "pages_kept": [665, 666]}
+
+    def test_a_page_the_index_lacks_is_bad_pages(self, fakes, monkeypatch, capsys):
+        code, body = run_json(monkeypatch, capsys, "--json", "index", "show", "KEY1",
+                              "--pages", "41")
+        assert code == 1
+        assert (body["ok"], body["error"]["code"]) == (False, "bad_pages")
+
+    def test_an_unparseable_page_list_fails_before_the_index_is_read(self, fakes, monkeypatch,
+                                                                      capsys):
+        code, body = run_json(monkeypatch, capsys, "--json", "index", "show", "KEY1",
+                              "--pages", "0")
+        assert code == 1
+        assert body["error"]["code"] == "bad_pages"
+        assert fakes.show == [] and fakes.slice == []
+
+    def test_markdown_shows_the_sliced_index(self, fakes, monkeypatch, capsys):
+        code, out, _err = run_cli(monkeypatch, capsys, "index", "show", "KEY1", "--pages", "3")
+        assert code == 0
+        assert json.loads(out.split("\n\n", 1)[1]) == {**SHOW_RESULT["index"],
+                                                        "pages_kept": [3]}
 
     def test_no_index_keeps_its_code(self, fakes, monkeypatch, capsys):
         missing = CliError("No source index on this item", code="no_index")

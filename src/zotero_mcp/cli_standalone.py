@@ -625,6 +625,34 @@ def _emit_result(args, command: str, data: dict, render) -> None:
     _out(args, command, data=data, text=None if _json_mode(args) else render(data))
 
 
+def _pdf_page_count(path) -> int:
+    """How many pages the PDF at *path* has."""
+    import pymupdf
+
+    with pymupdf.open(path) as doc:
+        return len(doc)
+
+
+def _check_pages(pages, path, flag: str = "--pages") -> None:
+    """Refuse a page list that is empty, starts below 1, or runs past the PDF.
+
+    `all` reaches here as None and needs no check. The count is read last, so
+    a list that is wrong on its face never opens the PDF.
+    """
+    if pages is None:
+        return
+    if not pages or min(pages) < 1:
+        raise _cli_json.CliError(
+            f"{flag} must name pages from 1 up, got {pages!r}", code="bad_pages",
+        )
+    count = _pdf_page_count(path)
+    if max(pages) > count:
+        raise _cli_json.CliError(
+            f"{flag} names page {max(pages)}, but the PDF has {count} pages",
+            code="bad_pages",
+        )
+
+
 def cmd_grep(args):
     """Count and locate terms in a PDF attachment, page by page."""
     import re
@@ -641,6 +669,7 @@ def cmd_grep(args):
     from zotero_mcp import pdf_grep, pdf_source
 
     with pdf_source.resolved_pdf(args.key, _ctx(args)) as pdf:
+        _check_pages(pages, pdf.path)
         try:
             data = pdf_grep.grep_pdf(
                 pdf.path, args.terms, regex=args.regex, word=args.word, pages=pages,
@@ -659,11 +688,25 @@ def cmd_sections(args):
     from zotero_mcp import pdf_sections, pdf_source
 
     with pdf_source.resolved_pdf(args.key, _ctx(args)) as pdf:
+        _check_pages(pages, pdf.path)
         data = pdf_sections.sections_for_pdf(
             pdf.path, pages=pages, max_level=args.max_level,
             chunk_pages=args.chunk_pages, inventory=args.inventory,
         )
     _emit_result(args, "sections", _with_source(pdf, data), pdf_sections.format_sections_markdown)
+
+
+def cmd_tables(args):
+    """The cells of each table on the named pages of a PDF attachment."""
+    pages = _parse_pages(args.pages)
+    setup_zotero_environment()
+    from zotero_mcp import pdf_source, pdf_tables
+
+    with pdf_source.resolved_pdf(args.key, _ctx(args)) as pdf:
+        _check_pages(pages, pdf.path)
+        data = pdf_tables.tables_for_pdf(pdf.path, pages=pages, strategy=args.strategy)
+    _emit_result(args, "tables", {"attachment_key": pdf.attachment_key, **data},
+                 pdf_tables.format_tables_markdown)
 
 
 def _read_index_json(source: str):
@@ -731,10 +774,17 @@ def cmd_index(args):
         )
         _emit_result(args, "index push", data, _format_index_push)
     elif args.subcommand == "show":
+        pages = _parse_pages(args.pages)
         setup_zotero_environment()
         data = source_index.show_index(
             pdf_source.parent_key(args.key), section=args.section, ctx=ctx,
         )
+        if pages is not None:
+            # After --section, so the two filters compose (AND). The slice
+            # checks the pages against the index header, not against a PDF.
+            from zotero_mcp import index_slice
+
+            data = {**data, "index": index_slice.filter_index_pages(data["index"], pages)}
         _emit_result(args, "index show", data, _format_index_show)
 
 
@@ -1566,6 +1616,14 @@ def build_parser() -> argparse.ArgumentParser:
     sc_p.add_argument("--inventory", action="store_true",
                       help="List the tables, figures and equations in each section")
 
+    tb_p = sub.add_parser("tables", help="Read the cells of the tables on PDF pages")
+    tb_p.add_argument("key", help="Item key or PDF attachment key")
+    tb_p.add_argument("--pages", required=True,
+                      help="Pages to read: all, 3, 3-6, or 1,4,6-9")
+    tb_p.add_argument("--strategy", choices=["lines", "text"], default="lines",
+                      help="lines finds ruled tables; text finds tables under a "
+                           "'Table N' caption that have no ruled cells")
+
     ix_p = sub.add_parser("index", help="Store or read a source index note on an item")
     ix_sub = ix_p.add_subparsers(dest="subcommand", required=True)
     ixp = ix_sub.add_parser("push", help="Write an index JSON file into the item's notes")
@@ -1574,12 +1632,14 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Index JSON file; - reads stdin")
     ixp.add_argument("--replace", action="store_true",
                      help="Replace the item's existing index instead of failing")
-    ixp.add_argument("--tags", help="Comma-separated tags for the index notes")
+    ixp.add_argument("--tags", help="Comma-separated tags to add to the parent item")
     ixp.add_argument("--dry-run", action="store_true",
                      help="Report what would be written, without writing")
     ixs = ix_sub.add_parser("show", help="Read an item's index back from its notes")
     ixs.add_argument("key", help="Item key or PDF attachment key")
     ixs.add_argument("--section", help="Only this section (S03) and its entries")
+    ixs.add_argument("--pages",
+                     help="Only entries on these pages: 3, 3-6, or 1,4,6-9 (with --section, both apply)")
     # A leaf parser is not wrapped by add_parser above, so it gets --json here.
     # SUPPRESS keeps a `--json` given before the command from being undone.
     for leaf in (ixp, ixs):
@@ -1864,6 +1924,7 @@ _CMD_MAP = {
     "layout": cmd_layout,
     "grep": cmd_grep,
     "sections": cmd_sections,
+    "tables": cmd_tables,
     "index": cmd_index,
     "read": cmd_read,
     "attach": cmd_attach,
@@ -1908,11 +1969,12 @@ Commands returning structured data
   grep                  data.counts{}, data.total_hits, data.pages[] -- per-page
                         hits and snippets, each match marked [[ ]]
   sections              data.sections[], data.source, data.scope
+  tables                data.pages[].tables[] -- header, rows, caption, rect_arg
   index push            data.note_keys, data.parts, data.counts
   index show            data.index -- the parsed index, or one section of it
 
-grep, sections and index also fail with a code a caller can branch on:
-no_pdf_attachment, bad_regex, no_index, index_exists, invalid_index.
+grep, sections, tables and index also fail with a code a caller can branch on:
+no_pdf_attachment, bad_regex, bad_pages, no_index, index_exists, invalid_index.
 
 Every other command returns {"text": "<the markdown it would have
 printed>"}. That is deliberate: those commands' answers really are status
