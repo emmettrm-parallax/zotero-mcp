@@ -1,8 +1,8 @@
 """`zotero-cli grep`, `sections`, `tables` and `index`, and the PDF key resolver under them.
 
 The engines behind these commands (`pdf_grep`, `pdf_sections`, `pdf_tables`,
-`source_index`, `index_slice`) are separate modules. These tests replace them with fakes injected through
-`sys.modules`, so what is pinned here is the wiring alone: which arguments the
+`source_index`, `index_slice`, `index_grep`) are separate modules. These tests replace them with fakes injected
+through `sys.modules`, so what is pinned here is the wiring alone: which arguments the
 CLI hands each engine, what identity fields it adds to the result, and the
 shape of the JSON envelope and its error codes.
 
@@ -87,6 +87,37 @@ SHOW_RESULT = {
 }
 
 
+INDEX_KINDS = ("facts", "vocabulary", "tables_figures", "equations", "gaps")
+
+
+def fact_record(number):
+    """One fact of a synthetic index, with the fields a lead line shows."""
+    return {"id": f"F{number:04d}", "page": number, "kind": "text", "quantity": "leakage rate",
+            "value": "5.34", "unit": "g/s", "condition": "at 3 bar", "ref": "Table 2",
+            "section_id": "S01"}
+
+
+def make_index(facts=0, vocabulary=0, *, title="Windback Seals", year="2018",
+               attachment="ATTACH01", page_count=15):
+    """A small synthetic index with *facts* facts and *vocabulary* vocabulary entries."""
+    return {
+        "schema": "source-index/v1",
+        "header": {"attachment_key": attachment, "title": title, "year": year,
+                   "page_count": page_count},
+        "sections": [{"id": "S01", "title": "Intro"}],
+        "vocabulary": [{"term": f"term {n}", "kind": "term", "symbol": None, "variants": [],
+                        "pages": [1]} for n in range(vocabulary)],
+        "facts": [fact_record(n) for n in range(1, facts + 1)],
+        "tables_figures": [], "equations": [], "gaps": [],
+    }
+
+
+def indexed(key, **kwargs):
+    """What `show_index` returns for *key*: a synthetic index under the note envelope."""
+    return {"item_key": key, "note_keys": [f"NOTE-{key}"], "parts": 1,
+            "index": make_index(**kwargs)}
+
+
 class Fakes(SimpleNamespace):
     """What the fake engines were called with, and what they return."""
 
@@ -108,7 +139,11 @@ def _install(monkeypatch, name, module):
 def fakes(monkeypatch):
     calls = Fakes(resolved=[], parent_keys=[], grep=[], sections=[], tables=[], push=[],
                   show=[], slice=[], page_counts=[], validate=[], errors_for_validate=[],
-                  pdf_pages=1200, index_pages=40)
+                  pdf_pages=1200, index_pages=40,
+                  # index_grep, show_indexes and list_items_with_tag
+                  index_grep=[], parse_terms=[], check_terms=[], filters=[],
+                  show_indexes=[], tag_calls=[], tagged=[], search_indexes={}, parent_map={},
+                  expanded=["wind-back"], broad=[])
 
     grep_mod = types.ModuleType("zotero_mcp.pdf_grep")
 
@@ -162,13 +197,78 @@ def fakes(monkeypatch):
         calls.show.append((parent_key, kwargs))
         return dict(SHOW_RESULT)
 
+    def show_indexes(parent_keys, *, ctx):
+        """One entry per key that the test set up; a key it left out is missing from the result."""
+        calls.show_indexes.append((list(parent_keys), ctx))
+        return {key: calls.search_indexes[key] for key in parent_keys if key in calls.search_indexes}
+
+    def list_items_with_tag(tag, **kwargs):
+        calls.tag_calls.append((tag, kwargs))
+        return list(calls.tagged)
+
     index_mod.validate_index = validate_index
     index_mod.push_index = push_index
     index_mod.show_index = show_index
+    index_mod.show_indexes = show_indexes
+    index_mod.list_items_with_tag = list_items_with_tag
+
+    grep_index_mod = types.ModuleType("zotero_mcp.index_grep")
+
+    def parse_terms(values, *, regex):
+        """The documented rule: comma split unless regex, strip, drop empties and casefold duplicates."""
+        calls.index_grep.append("parse_terms")
+        calls.parse_terms.append((list(values), regex))
+        parts = list(values) if regex else [p.strip() for v in values for p in v.split(",")]
+        terms, seen = [], set()
+        for part in parts:
+            if part and part.casefold() not in seen:
+                seen.add(part.casefold())
+                terms.append(part)
+        if not terms:
+            raise CliError("no terms to search for", code="bad_grep")
+        return terms
+
+    def check_terms(terms, *, regex):
+        calls.index_grep.append("check_terms")
+        calls.check_terms.append((list(terms), regex))
+        for term in terms if regex else ():
+            try:
+                re.compile(term)
+            except re.error as exc:
+                raise CliError(f"Bad regex {term!r}: {exc}", code="bad_regex") from exc
+
+    def apply_filters(index, *, pages=None, terms=None, regex=False, expand=False, fields="full",
+                      limit=40):
+        """Keeps every entry up to the limit and reports the counts in the documented shape."""
+        calls.index_grep.append("apply_filters")
+        calls.filters.append((index, dict(pages=pages, terms=terms, regex=regex, expand=expand,
+                                          fields=fields, limit=limit)))
+        if pages and max(pages) > calls.index_pages:
+            raise CliError(f"pages outside 1-{calls.index_pages}", code="bad_pages")
+        subset, total, returned = dict(index), {}, {}
+        for kind in INDEX_KINDS:
+            entries = index.get(kind) or []
+            kept = entries[:limit] if limit else entries
+            total[kind], returned[kind] = len(entries), len(kept)
+            if kind in index:
+                subset[kind] = kept
+        return subset, {
+            "terms": list(terms or []), "regex": regex, "expand": expand, "fields": fields,
+            "limit": limit, "pages": pages,
+            "expanded_terms": list(calls.expanded), "expanded_total": len(calls.expanded),
+            "expanded_symbols": [], "broad_terms": list(calls.broad),
+            "term_counts": {term: 1 for term in terms or []},
+            "total": total, "matched": dict(total), "returned": returned,
+            "truncated": {kind: total[kind] - returned[kind] for kind in INDEX_KINDS},
+        }
+
+    grep_index_mod.parse_terms = parse_terms
+    grep_index_mod.check_terms = check_terms
+    grep_index_mod.apply_filters = apply_filters
 
     for name, module in (("pdf_grep", grep_mod), ("pdf_sections", sections_mod),
                          ("pdf_tables", tables_mod), ("index_slice", slice_mod),
-                         ("source_index", index_mod)):
+                         ("source_index", index_mod), ("index_grep", grep_index_mod)):
         _install(monkeypatch, name, module)
 
     @contextmanager
@@ -178,7 +278,7 @@ def fakes(monkeypatch):
 
     def parent_key(key):
         calls.parent_keys.append(key)
-        return PARENT
+        return calls.parent_map.get(key, PARENT)
 
     def pdf_page_count(path):
         calls.page_counts.append(path)
@@ -310,6 +410,103 @@ class TestParsers:
         for code in ("no_pdf_attachment", "bad_regex", "bad_pages", "no_index", "index_exists",
                      "invalid_index"):
             assert code in cli_standalone.JSON_SCHEMA_DOC
+
+
+class TestIndexFilterParsers:
+    def test_show_filter_flags_are_absent_by_default(self):
+        """None, not the working default, so that the command sees what was given."""
+        args = build_parser().parse_args(["index", "show", "KEY1"])
+        assert (args.grep, args.regex, args.fields, args.expand, args.limit) == \
+            (None, False, None, False, None)
+
+    def test_show_filter_flags_parse(self):
+        args = build_parser().parse_args(
+            ["index", "show", "KEY1", "--grep", "a,b", "--grep", "c", "--regex", "--fields", "lead",
+             "--expand", "--limit", "5"])
+        assert args.grep == ["a,b", "c"]
+        assert (args.regex, args.fields, args.expand, args.limit) == (True, "lead", True, 5)
+
+    @pytest.mark.parametrize("choice", ["lead", "full"])
+    def test_show_fields_takes_lead_or_full(self, choice):
+        args = build_parser().parse_args(["index", "show", "KEY1", "--fields", choice])
+        assert args.fields == choice
+
+    def test_show_fields_refuses_any_other_value(self):
+        with pytest.raises(SystemExit) as exc:
+            build_parser().parse_args(["index", "show", "KEY1", "--fields", "short"])
+        assert exc.value.code == 2
+
+    def test_search_defaults(self):
+        args = build_parser().parse_args(["index", "search", "leakage"])
+        assert (args.command, args.subcommand, args.terms) == ("index", "search", ["leakage"])
+        assert (args.items, args.tag, args.fields) == (None, "status/indexed", "lead")
+        assert (args.expand, args.regex, args.limit, args.max_items) == (False, False, 10, 10)
+
+    def test_search_flags_parse(self):
+        args = build_parser().parse_args(
+            ["index", "search", "leakage,seal", "wind-back", "--items", "K1,K2", "--tag", "x/y",
+             "--fields", "full", "--expand", "--limit", "3", "--max-items", "4", "--regex"])
+        assert args.terms == ["leakage,seal", "wind-back"]
+        assert (args.items, args.tag, args.fields) == ("K1,K2", "x/y", "full")
+        assert (args.expand, args.regex, args.limit, args.max_items) == (True, True, 3, 4)
+
+    def test_search_needs_a_term(self):
+        with pytest.raises(SystemExit) as exc:
+            build_parser().parse_args(["index", "search"])
+        assert exc.value.code == 2
+
+    def test_search_fields_takes_lead_or_full(self):
+        assert build_parser().parse_args(["index", "search", "x", "--fields", "full"]).fields == "full"
+        with pytest.raises(SystemExit) as exc:
+            build_parser().parse_args(["index", "search", "x", "--fields", "short"])
+        assert exc.value.code == 2
+
+    @pytest.mark.parametrize("argv", [
+        ["index", "show", "KEY1", "--limit", "-1"],
+        ["index", "show", "KEY1", "--limit", "many"],
+        ["index", "search", "x", "--limit", "-1"],
+        ["index", "search", "x", "--limit", "1.5"],
+        ["index", "search", "x", "--max-items", "-2"],
+        ["index", "search", "x", "--max-items", "lots"],
+    ])
+    def test_limit_and_max_items_refuse_a_negative_or_non_integer_value(self, argv, capsys):
+        with pytest.raises(SystemExit) as exc:
+            build_parser().parse_args(argv)
+        assert exc.value.code == 2
+        assert "whole number from 0 up" in capsys.readouterr().err
+
+    def test_zero_means_no_cap_and_is_accepted(self):
+        assert build_parser().parse_args(["index", "show", "KEY1", "--limit", "0"]).limit == 0
+        args = build_parser().parse_args(["index", "search", "x", "--limit", "0", "--max-items", "0"])
+        assert (args.limit, args.max_items) == (0, 0)
+
+    @pytest.mark.parametrize("argv", [
+        ["--json", "index", "search", "x"],
+        ["index", "--json", "search", "x"],
+        ["index", "search", "x", "--json"],
+        ["index", "search", "--json", "x", "y"],
+    ])
+    def test_json_flag_works_anywhere_on_search(self, argv):
+        assert build_parser().parse_args(argv).json_out is True
+
+    def test_json_flag_before_the_command_survives_the_search_leaf_default(self):
+        assert build_parser().parse_args(["--json", "index", "search", "x"]).json_out is True
+        assert build_parser().parse_args(["index", "search", "x"]).json_out is False
+
+    def test_schema_doc_names_index_search_the_filter_and_bad_grep(self):
+        doc = cli_standalone.JSON_SCHEMA_DOC
+        assert "  index search " in doc
+        assert ("with --grep, --fields or --limit also data.filter{} -- "
+                "terms, matched{}, truncated{}") in doc
+        assert ("data.items[] -- hits per indexed item, most facts first; "
+                "data.no_hits[], data.skipped[]") in doc
+        assert "bad_grep" in doc
+
+    def test_the_limit_defaults_match_index_grep(self):
+        """Skipped until `index_grep` (F1) is on the branch; the merge then compares the copies."""
+        index_grep = pytest.importorskip("zotero_mcp.index_grep")
+        assert cli_standalone._INDEX_SHOW_LIMIT == index_grep.SHOW_LIMIT
+        assert build_parser().parse_args(["index", "search", "x"]).limit == index_grep.SEARCH_LIMIT
 
 
 # ---------------------------------------------------------------------------
@@ -755,6 +952,551 @@ class TestIndexShow:
         assert json.loads(out.split("\n\n", 1)[1]) == SHOW_RESULT["index"]
 
 
+class TestIndexShowLegacy:
+    """No --grep, --fields or --limit: today's output, and `index_grep` is never called."""
+
+    def test_json_output_is_byte_identical(self, fakes, monkeypatch, capsys):
+        code, out, _err = run_cli(monkeypatch, capsys, "--json", "index", "show", ATTACH)
+        expected = json.dumps({"ok": True, "command": "index show", "schema": 1,
+                               "data": SHOW_RESULT}, ensure_ascii=False, default=str) + "\n"
+        assert (code, out) == (0, expected)
+
+    def test_json_output_with_pages_is_byte_identical(self, fakes, monkeypatch, capsys):
+        code, out, _err = run_cli(monkeypatch, capsys, "--json", "index", "show", ATTACH,
+                                  "--pages", "3-4")
+        data = {**SHOW_RESULT, "index": {**SHOW_RESULT["index"], "pages_kept": [3, 4]}}
+        expected = json.dumps({"ok": True, "command": "index show", "schema": 1, "data": data},
+                              ensure_ascii=False, default=str) + "\n"
+        assert (code, out) == (0, expected)
+
+    def test_markdown_output_is_byte_identical(self, fakes, monkeypatch, capsys):
+        code, out, _err = run_cli(monkeypatch, capsys, "index", "show", ATTACH)
+        expected = (f"Source index for {PARENT}: 1 note part(s) (NOTE0001)\n\n"
+                    + json.dumps(SHOW_RESULT["index"], indent=2, ensure_ascii=False) + "\n")
+        assert (code, out) == (0, expected)
+
+    @pytest.mark.parametrize("flags", [
+        (), ("--pages", "3-5"), ("--pages", "all"), ("--section", "S03"),
+        ("--section", "S03", "--pages", "3"),
+    ])
+    def test_index_grep_is_not_called(self, fakes, monkeypatch, capsys, flags):
+        code, _body = run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH, *flags)
+        assert code == 0
+        assert fakes.index_grep == [] and fakes.filters == []
+
+    def test_a_failing_legacy_call_does_not_call_it_either(self, fakes, monkeypatch, capsys):
+        code, body = run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH, "--pages", "0")
+        assert (code, body["error"]["code"]) == (1, "bad_pages")
+        assert fakes.index_grep == []
+
+
+class TestIndexShowFiltered:
+    @pytest.mark.parametrize("flags", [
+        ("--grep", "leakage"), ("--fields", "full"), ("--fields", "lead"), ("--limit", "5"),
+        ("--limit", "0"),
+    ])
+    def test_any_of_grep_fields_and_limit_turns_the_filtered_view_on(self, fakes, monkeypatch,
+                                                                    capsys, flags):
+        code, body = run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH, *flags)
+        assert code == 0
+        assert (body["ok"], body["command"]) == (True, "index show")
+        assert len(fakes.filters) == 1
+        assert "filter" in body["data"]
+
+    def test_the_section_goes_to_show_index_and_the_rest_to_apply_filters(self, fakes, monkeypatch,
+                                                                         capsys):
+        code, _body = run_json(
+            monkeypatch, capsys, "--json", "index", "show", ATTACH, "--section", "S03",
+            "--pages", "3-5,9", "--grep", "leakage,seal", "--grep", "gap", "--expand",
+            "--fields", "lead", "--limit", "7")
+        assert code == 0
+        [(parent, show_kwargs)] = fakes.show
+        assert parent == PARENT
+        assert show_kwargs["section"] == "S03" and show_kwargs["ctx"] is not None
+        [(index, filter_kwargs)] = fakes.filters
+        assert index == SHOW_RESULT["index"]
+        assert filter_kwargs == {"pages": [3, 4, 5, 9], "terms": ["leakage", "seal", "gap"],
+                                 "regex": False, "expand": True, "fields": "lead", "limit": 7}
+
+    def test_the_limit_is_40_and_the_fields_are_full_when_omitted(self, fakes, monkeypatch, capsys):
+        run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH, "--grep", "leakage")
+        run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH, "--fields", "lead")
+        first, second = (kwargs for _index, kwargs in fakes.filters)
+        assert (first["limit"], first["fields"]) == (40, "full")
+        assert (second["limit"], second["fields"]) == (40, "lead")
+        assert second["terms"] is None and first["pages"] is None
+
+    def test_a_limit_of_zero_reaches_apply_filters_as_zero(self, fakes, monkeypatch, capsys):
+        run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH, "--limit", "0")
+        assert fakes.filters[0][1]["limit"] == 0
+
+    @pytest.mark.parametrize("pages, expected", [(None, None), ("all", None), ("665-666", [665, 666])])
+    def test_pages_go_to_apply_filters_and_never_to_the_slice(self, fakes, monkeypatch, capsys,
+                                                             pages, expected):
+        fakes.index_pages = 1200
+        flags = ("--pages", pages) if pages else ()
+        run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH, "--limit", "5", *flags)
+        assert fakes.filters[0][1]["pages"] == expected
+        assert fakes.slice == []
+
+    def test_the_data_keys_end_with_filter(self, fakes, monkeypatch, capsys):
+        _code, body = run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH,
+                               "--grep", "leakage")
+        assert list(body["data"]) == ["item_key", "note_keys", "parts", "index", "filter"]
+
+    def test_the_filter_keys_follow_the_contract_order(self, fakes, monkeypatch, capsys):
+        _code, body = run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH,
+                               "--grep", "leakage", "--section", "S03")
+        assert list(body["data"]["filter"]) == [
+            "terms", "regex", "expand", "fields", "limit", "pages", "section", "expanded_terms",
+            "expanded_total", "expanded_symbols", "broad_terms", "term_counts", "total", "matched",
+            "returned", "truncated"]
+
+    @pytest.mark.parametrize("flags, section", [(("--section", "S03"), "S03"), ((), None)])
+    def test_filter_section_is_the_flag_or_null(self, fakes, monkeypatch, capsys, flags, section):
+        _code, body = run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH,
+                               "--grep", "leakage", *flags)
+        assert body["data"]["filter"]["section"] == section
+
+    def test_the_result_carries_the_index_apply_filters_returned(self, fakes, monkeypatch, capsys):
+        with patch.object(sys.modules["zotero_mcp.source_index"], "show_index",
+                          return_value=indexed(PARENT, facts=60)):
+            _code, body = run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH,
+                                   "--grep", "leakage", "--limit", "10")
+        data = body["data"]
+        assert [f["id"] for f in data["index"]["facts"]] == [f"F{n:04d}" for n in range(1, 11)]
+        assert data["filter"]["matched"]["facts"] == 60
+        assert data["filter"]["returned"]["facts"] == 10
+        assert data["filter"]["truncated"]["facts"] == 50
+        assert (data["item_key"], data["parts"]) == (PARENT, 1)
+
+    # --- terms -------------------------------------------------------------------------------
+
+    def test_the_grep_values_reach_parse_terms_as_given(self, fakes, monkeypatch, capsys):
+        run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH,
+                 "--grep", "leakage, seal", "--grep", "Wind-back")
+        assert fakes.parse_terms == [(["leakage, seal", "Wind-back"], False)]
+
+    def test_terms_split_on_commas_repeat_and_drop_duplicates(self, fakes, monkeypatch, capsys):
+        run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH,
+                 "--grep", "leakage, seal", "--grep", "Leakage", "--grep", "rim,, seal")
+        assert fakes.filters[0][1]["terms"] == ["leakage", "seal", "rim"]
+
+    def test_a_regex_keeps_its_comma(self, fakes, monkeypatch, capsys):
+        _code, body = run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH,
+                               "--grep", "a{1,3}", "--regex")
+        assert fakes.parse_terms == [(["a{1,3}"], True)]
+        assert fakes.check_terms == [(["a{1,3}"], True)]
+        assert fakes.filters[0][1]["terms"] == ["a{1,3}"] and fakes.filters[0][1]["regex"] is True
+        assert body["data"]["filter"]["regex"] is True
+
+    # --- errors, all before the read -----------------------------------------------------------
+
+    def test_an_empty_term_list_is_bad_grep_before_the_read(self, fakes, monkeypatch, capsys):
+        code, body = run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH, "--grep", ",")
+        assert (code, body["ok"], body["error"]["code"]) == (1, False, "bad_grep")
+        assert fakes.show == [] and fakes.parent_keys == [] and fakes.filters == []
+
+    @pytest.mark.parametrize("flags", [
+        ("--expand",), ("--regex",), ("--expand", "--regex"), ("--fields", "lead", "--expand"),
+        ("--limit", "5", "--regex"),
+    ])
+    def test_expand_or_regex_without_grep_is_bad_grep_before_the_read(self, fakes, monkeypatch,
+                                                                     capsys, flags):
+        code, body = run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH, *flags)
+        assert (code, body["error"]["code"]) == (1, "bad_grep")
+        assert fakes.show == [] and fakes.filters == []
+
+    def test_a_pattern_that_does_not_compile_is_bad_regex_before_the_read(self, fakes, monkeypatch,
+                                                                         capsys):
+        code, body = run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH,
+                              "--grep", "(", "--regex")
+        assert (code, body["error"]["code"]) == (1, "bad_regex")
+        assert fakes.show == [] and fakes.parent_keys == [] and fakes.filters == []
+
+    def test_an_unparseable_page_list_is_bad_pages_before_the_read(self, fakes, monkeypatch,
+                                                                    capsys):
+        code, body = run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH,
+                              "--pages", "0", "--grep", "leakage")
+        assert (code, body["error"]["code"]) == (1, "bad_pages")
+        assert fakes.show == [] and fakes.filters == []
+
+    def test_the_pages_are_checked_before_the_terms(self, fakes, monkeypatch, capsys):
+        code, body = run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH,
+                              "--pages", "0", "--grep", ",")
+        assert (code, body["error"]["code"]) == (1, "bad_pages")
+        assert fakes.parse_terms == []
+
+    def test_the_terms_are_checked_before_the_notes_are_read(self, fakes, monkeypatch, capsys):
+        run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH, "--grep", "leakage",
+                 "--regex")
+        assert fakes.index_grep[:3] == ["parse_terms", "check_terms", "apply_filters"]
+        assert len(fakes.show) == 1
+
+    def test_a_page_past_the_index_is_bad_pages_from_the_filter(self, fakes, monkeypatch, capsys):
+        code, body = run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH,
+                              "--pages", "41", "--limit", "5")
+        assert (code, body["error"]["code"]) == (1, "bad_pages")
+        assert len(fakes.show) == 1  # the header holds the page count, so the read comes first
+
+    @pytest.mark.parametrize("code_name", ["no_index", "bad_section"])
+    def test_the_read_errors_keep_their_codes_when_filtered(self, fakes, monkeypatch, capsys,
+                                                          code_name):
+        failure = CliError("cannot read", code=code_name)
+        with patch.object(sys.modules["zotero_mcp.source_index"], "show_index",
+                          side_effect=failure):
+            code, body = run_json(monkeypatch, capsys, "--json", "index", "show", ATTACH,
+                                  "--grep", "leakage")
+        assert (code, body["error"]["code"]) == (1, code_name)
+        assert fakes.filters == []
+
+    # --- markdown ----------------------------------------------------------------------------
+
+    def test_markdown_puts_the_filter_line_under_the_header_then_the_index_json(self, fakes,
+                                                                                monkeypatch,
+                                                                                capsys):
+        fakes.expanded, fakes.broad = ["a", "b", "c"], ["seal"]
+        with patch.object(sys.modules["zotero_mcp.source_index"], "show_index",
+                          return_value=indexed(PARENT, facts=120)):
+            code, out, _err = run_cli(monkeypatch, capsys, "index", "show", ATTACH,
+                                      "--grep", "leakage", "--limit", "5")
+        assert code == 0
+        head, body = out.split("\n\n", 1)
+        assert head.splitlines() == [
+            f"Source index for {PARENT}: 1 note part(s) (NOTE-{PARENT})",
+            "Filter: 120 of 120 facts matched, 5 returned, 115 cut by --limit; expanded 3; "
+            "broad [seal]"]
+        assert len(json.loads(body)["facts"]) == 5
+
+    def test_the_filter_line_counts_facts_and_names_the_broad_terms(self):
+        data = {"item_key": PARENT, "note_keys": ["N1"], "parts": 1, "index": {"facts": []},
+                "filter": {"total": {"facts": 300}, "matched": {"facts": 12},
+                           "returned": {"facts": 10}, "truncated": {"facts": 2},
+                           "expanded_total": 5, "broad_terms": ["seal", "gap"]}}
+        assert cli_standalone._format_index_show(data).splitlines()[1] == (
+            "Filter: 12 of 300 facts matched, 10 returned, 2 cut by --limit; expanded 5; "
+            "broad [seal, gap]")
+
+
+def _stage(fakes, **indexes):
+    """Tag the given keys, in the order given, and stage what `show_indexes` returns for each."""
+    fakes.tagged = list(indexes)
+    fakes.search_indexes = {
+        key: value if "error" in value else indexed(key, **value) for key, value in indexes.items()
+    }
+
+
+def _search(monkeypatch, capsys, *argv):
+    return run_json(monkeypatch, capsys, "--json", "index", "search", *argv)
+
+
+class TestIndexSearch:
+    def test_the_default_item_set_is_the_status_indexed_tag(self, fakes, monkeypatch, capsys):
+        _stage(fakes, DDDD0001={"facts": 1}, AAAA0001={"facts": 2})
+        code, body = _search(monkeypatch, capsys, "leakage")
+        assert (code, body["ok"], body["command"]) == (0, True, "index search")
+        assert [tag for tag, _kw in fakes.tag_calls] == ["status/indexed"]
+        [(keys, ctx)] = fakes.show_indexes
+        assert keys == ["DDDD0001", "AAAA0001"] and ctx is not None
+        assert fakes.parent_keys == []
+        data = body["data"]
+        assert (data["tag"], data["items_requested"], data["searched"]) == \
+            ("status/indexed", None, 2)
+
+    def test_a_tag_flag_replaces_the_default(self, fakes, monkeypatch, capsys):
+        _stage(fakes, AAAA0001={"facts": 1})
+        _code, body = _search(monkeypatch, capsys, "leakage", "--tag", "status/checked")
+        assert [tag for tag, _kw in fakes.tag_calls] == ["status/checked"]
+        assert body["data"]["tag"] == "status/checked"
+
+    def test_items_replace_the_tag_and_go_through_parent_key(self, fakes, monkeypatch, capsys):
+        fakes.parent_map = {"ATTACH01": "AAAA0001", "BBBB0001": "BBBB0001"}
+        fakes.search_indexes = {"AAAA0001": indexed("AAAA0001", facts=1),
+                                "BBBB0001": indexed("BBBB0001", facts=1)}
+        _code, body = _search(monkeypatch, capsys, "leakage", "--items", "ATTACH01, BBBB0001")
+        assert fakes.tag_calls == []
+        assert fakes.parent_keys == ["ATTACH01", "BBBB0001"]
+        assert fakes.show_indexes[0][0] == ["AAAA0001", "BBBB0001"]
+        data = body["data"]
+        assert data["tag"] is None
+        assert data["items_requested"] == ["ATTACH01", "BBBB0001"]
+        assert data["searched"] == 2
+
+    def test_items_that_share_a_parent_are_searched_once(self, fakes, monkeypatch, capsys):
+        fakes.parent_map = {"ATTACH01": "AAAA0001", "AAAA0001": "AAAA0001"}
+        fakes.search_indexes = {"AAAA0001": indexed("AAAA0001", facts=1)}
+        _code, body = _search(monkeypatch, capsys, "leakage", "--items", "ATTACH01,AAAA0001,ATTACH01")
+        assert fakes.show_indexes[0][0] == ["AAAA0001"]
+        assert len(fakes.filters) == 1
+        assert body["data"]["searched"] == 1
+        assert [item["item_key"] for item in body["data"]["items"]] == ["AAAA0001"]
+
+    def test_items_ignore_the_tag(self, fakes, monkeypatch, capsys):
+        fakes.search_indexes = {"AAAA0001": indexed("AAAA0001", facts=1)}
+        _code, body = _search(monkeypatch, capsys, "leakage", "--items", "AAAA0001",
+                              "--tag", "status/checked")
+        assert fakes.tag_calls == []
+        assert body["data"]["tag"] is None
+
+    @pytest.mark.parametrize("flags", [(), ("--items", ","), ("--items", "")])
+    def test_an_empty_item_set_is_ok_with_nothing_searched(self, fakes, monkeypatch, capsys, flags):
+        code, body = _search(monkeypatch, capsys, "leakage", *flags)
+        assert (code, body["ok"]) == (0, True)
+        data = body["data"]
+        assert (data["searched"], data["items"], data["no_hits"], data["skipped"],
+                data["items_truncated"]) == (0, [], [], [], 0)
+        assert fakes.show_indexes == [] and fakes.filters == []
+
+    def test_an_empty_items_flag_names_no_tag_and_no_keys(self, fakes, monkeypatch, capsys):
+        _code, body = _search(monkeypatch, capsys, "leakage", "--items", ",")
+        assert fakes.tag_calls == []
+        assert (body["data"]["tag"], body["data"]["items_requested"]) == (None, [])
+
+    # --- terms and flags -------------------------------------------------------------------
+
+    def test_the_terms_reach_parse_terms_and_apply_filters(self, fakes, monkeypatch, capsys):
+        _stage(fakes, AAAA0001={"facts": 1})
+        _code, body = _search(monkeypatch, capsys, "leakage, seal", "Wind-back", "leakage", "--expand")
+        assert fakes.parse_terms == [(["leakage, seal", "Wind-back", "leakage"], False)]
+        [(index, kwargs)] = fakes.filters
+        assert index == fakes.search_indexes["AAAA0001"]["index"]
+        assert kwargs == {"pages": None, "terms": ["leakage", "seal", "Wind-back"], "regex": False,
+                          "expand": True, "fields": "lead", "limit": 10}
+        data = body["data"]
+        assert data["terms"] == ["leakage", "seal", "Wind-back"]
+        assert (data["regex"], data["expand"], data["fields"], data["limit"], data["max_items"]) == \
+            (False, True, "lead", 10, 10)
+
+    def test_the_flags_reach_apply_filters(self, fakes, monkeypatch, capsys):
+        _stage(fakes, AAAA0001={"facts": 1})
+        _code, body = _search(monkeypatch, capsys, "a{1,3}", "--regex", "--fields", "full",
+                              "--limit", "0", "--max-items", "3")
+        assert fakes.filters[0][1] == {"pages": None, "terms": ["a{1,3}"], "regex": True,
+                                       "expand": False, "fields": "full", "limit": 0}
+        data = body["data"]
+        assert (data["regex"], data["fields"], data["limit"], data["max_items"]) == \
+            (True, "full", 0, 3)
+
+    def test_a_regex_keeps_its_comma(self, fakes, monkeypatch, capsys):
+        _code, body = _search(monkeypatch, capsys, "a{1,3}", "--regex")
+        assert fakes.parse_terms == [(["a{1,3}"], True)]
+        assert fakes.check_terms == [(["a{1,3}"], True)]
+        assert body["data"]["terms"] == ["a{1,3}"]
+
+    def test_each_item_gets_its_own_index(self, fakes, monkeypatch, capsys):
+        _stage(fakes, DDDD0001={"facts": 1}, AAAA0001={"facts": 2})
+        _search(monkeypatch, capsys, "leakage")
+        assert [index for index, _kw in fakes.filters] == [
+            fakes.search_indexes["DDDD0001"]["index"], fakes.search_indexes["AAAA0001"]["index"]]
+
+    # --- errors, all before the read -----------------------------------------------------------
+
+    def test_an_empty_term_list_is_bad_grep_before_any_read(self, fakes, monkeypatch, capsys):
+        code, body = _search(monkeypatch, capsys, ",")
+        assert (code, body["ok"], body["error"]["code"]) == (1, False, "bad_grep")
+        assert fakes.tag_calls == [] and fakes.show_indexes == [] and fakes.parent_keys == []
+
+    def test_a_pattern_that_does_not_compile_is_bad_regex_before_any_read(self, fakes, monkeypatch,
+                                                                         capsys):
+        code, body = _search(monkeypatch, capsys, "(", "--regex", "--items", "AAAA0001")
+        assert (code, body["ok"], body["error"]["code"]) == (1, False, "bad_regex")
+        assert fakes.tag_calls == [] and fakes.show_indexes == [] and fakes.parent_keys == []
+
+    # --- the result -------------------------------------------------------------------------
+
+    def test_the_data_keys_follow_the_contract_order(self, fakes, monkeypatch, capsys):
+        _stage(fakes, AAAA0001={"facts": 1})
+        _code, body = _search(monkeypatch, capsys, "leakage")
+        assert list(body["data"]) == [
+            "terms", "regex", "expand", "fields", "limit", "max_items", "tag", "items_requested",
+            "searched", "items_truncated", "items", "no_hits", "skipped"]
+
+    def test_an_item_carries_its_header_facts_and_the_filtered_lists(self, fakes, monkeypatch,
+                                                                    capsys):
+        fakes.tagged = ["AAAA0001"]
+        fakes.search_indexes = {"AAAA0001": indexed(
+            "AAAA0001", facts=2, vocabulary=1, title="Windback Seals", year="2018",
+            attachment="HLCXLQWB", page_count=15)}
+        fakes.expanded, fakes.broad = ["wind-back"], ["seal"]
+        _code, body = _search(monkeypatch, capsys, "leakage", "--limit", "1")
+        [item] = body["data"]["items"]
+        assert list(item) == ["item_key", "title", "year", "attachment_key", "page_count", "filter",
+                              "sections", "facts", "vocabulary", "tables_figures", "equations",
+                              "gaps"]
+        assert (item["item_key"], item["title"], item["year"]) == ("AAAA0001", "Windback Seals", "2018")
+        assert (item["attachment_key"], item["page_count"]) == ("HLCXLQWB", 15)
+        assert list(item["filter"]) == [
+            "expanded_terms", "expanded_total", "expanded_symbols", "broad_terms", "term_counts",
+            "total", "matched", "returned", "truncated"]
+        assert item["filter"]["matched"]["facts"] == 2 and item["filter"]["truncated"]["facts"] == 1
+        assert item["filter"]["broad_terms"] == ["seal"]
+        assert item["facts"] == make_index(facts=2)["facts"][:1]
+        assert item["sections"] == [{"id": "S01", "title": "Intro"}]
+        assert len(item["vocabulary"]) == 1
+
+    def test_an_item_with_an_error_is_skipped_and_the_others_are_still_searched(self, fakes,
+                                                                                monkeypatch, capsys):
+        fakes.tagged = ["AAAA0001", "NOIX0001", "BADX0001", "BOOM0001", "GONE0001"]
+        fakes.search_indexes = {
+            "AAAA0001": indexed("AAAA0001", facts=2),
+            "NOIX0001": {"error": {"code": "no_index", "message": "item NOIX0001 has no source index"}},
+            "BADX0001": {"error": {"code": "invalid_index", "message": "part 2 is missing"}},
+            "BOOM0001": {"error": {"code": "error", "message": "note fetch failed"}},
+            # GONE0001 is absent from what show_indexes returns
+        }
+        code, body = _search(monkeypatch, capsys, "leakage")
+        assert (code, body["ok"]) == (0, True)
+        data = body["data"]
+        assert [item["item_key"] for item in data["items"]] == ["AAAA0001"]
+        assert data["skipped"] == [
+            {"item_key": "NOIX0001", "code": "no_index", "message": "item NOIX0001 has no source index"},
+            {"item_key": "BADX0001", "code": "invalid_index", "message": "part 2 is missing"},
+            {"item_key": "BOOM0001", "code": "error", "message": "note fetch failed"},
+            {"item_key": "GONE0001", "code": "error", "message": "no index was read"}]
+        assert data["searched"] == 5
+        assert len(fakes.filters) == 1  # a skipped item is never filtered
+
+    def test_an_item_with_no_match_in_any_kind_is_listed_in_no_hits(self, fakes, monkeypatch,
+                                                                    capsys):
+        _stage(fakes, ZZZZ0001={"facts": 0}, HITT0001={"facts": 1}, AAAA0001={"facts": 0})
+        _code, body = _search(monkeypatch, capsys, "leakage")
+        data = body["data"]
+        assert data["no_hits"] == ["AAAA0001", "ZZZZ0001"]
+        assert [item["item_key"] for item in data["items"]] == ["HITT0001"]
+
+    def test_an_item_with_only_vocabulary_matches_is_a_hit(self, fakes, monkeypatch, capsys):
+        _stage(fakes, AAAA0001={"facts": 0, "vocabulary": 2})
+        _code, body = _search(monkeypatch, capsys, "leakage")
+        assert [item["item_key"] for item in body["data"]["items"]] == ["AAAA0001"]
+        assert body["data"]["no_hits"] == []
+
+    def test_items_sort_by_facts_then_all_matches_then_key(self, fakes, monkeypatch, capsys):
+        _stage(fakes,
+               DDDD0001={"facts": 3},
+               EEEE0001={"facts": 0, "vocabulary": 9},
+               AAAA0001={"facts": 3},
+               CCCC0001={"facts": 3, "vocabulary": 4},
+               BBBB0001={"facts": 5})
+        _code, body = _search(monkeypatch, capsys, "leakage")
+        assert [item["item_key"] for item in body["data"]["items"]] == [
+            "BBBB0001", "CCCC0001", "AAAA0001", "DDDD0001", "EEEE0001"]
+
+    def test_max_items_cuts_after_the_sort_and_reports_items_truncated(self, fakes, monkeypatch,
+                                                                      capsys):
+        _stage(fakes,
+               DDDD0001={"facts": 3},
+               EEEE0001={"facts": 1},
+               AAAA0001={"facts": 3, "vocabulary": 1},
+               NONE0001={"facts": 0},
+               BBBB0001={"facts": 5})
+        fakes.tagged.append("ERRR0001")
+        fakes.search_indexes["ERRR0001"] = {"error": {"code": "no_index", "message": "none"}}
+        _code, body = _search(monkeypatch, capsys, "leakage", "--max-items", "2")
+        data = body["data"]
+        assert [item["item_key"] for item in data["items"]] == ["BBBB0001", "AAAA0001"]
+        assert (data["max_items"], data["items_truncated"]) == (2, 2)
+        assert data["no_hits"] == ["NONE0001"]  # the cut does not touch these two lists
+        assert [skip["item_key"] for skip in data["skipped"]] == ["ERRR0001"]
+        assert data["searched"] == 6
+
+    def test_max_items_defaults_to_10(self, fakes, monkeypatch, capsys):
+        _stage(fakes, **{f"KEY{n:05d}": {"facts": n} for n in range(1, 13)})
+        _code, body = _search(monkeypatch, capsys, "leakage")
+        data = body["data"]
+        assert (len(data["items"]), data["items_truncated"], data["max_items"]) == (10, 2, 10)
+        assert data["items"][0]["item_key"] == "KEY00012"
+
+    def test_a_max_items_of_zero_is_no_cap(self, fakes, monkeypatch, capsys):
+        _stage(fakes, **{f"KEY{n:05d}": {"facts": n} for n in range(1, 13)})
+        _code, body = _search(monkeypatch, capsys, "leakage", "--max-items", "0")
+        assert (len(body["data"]["items"]), body["data"]["items_truncated"]) == (12, 0)
+
+    def test_items_truncated_is_zero_when_every_item_fits(self, fakes, monkeypatch, capsys):
+        _stage(fakes, AAAA0001={"facts": 1}, BBBB0001={"facts": 2})
+        _code, body = _search(monkeypatch, capsys, "leakage", "--max-items", "2")
+        assert body["data"]["items_truncated"] == 0
+
+    # --- markdown ----------------------------------------------------------------------------
+
+    def test_markdown_lists_each_item_with_its_fact_leads(self, fakes, monkeypatch, capsys):
+        _stage(fakes, AAAA0001={"facts": 2, "vocabulary": 1})
+        code, out, _err = run_cli(monkeypatch, capsys, "index", "search", "leakage")
+        assert code == 0
+        assert out == (
+            "## AAAA0001 Windback Seals (2018): 2 facts, 1 vocabulary\n"
+            "p1 F0001 leakage rate = 5.34 g/s (at 3 bar) [Table 2]\n"
+            "p2 F0002 leakage rate = 5.34 g/s (at 3 bar) [Table 2]\n")
+
+    def test_markdown_leaves_out_a_null_part_of_a_lead(self, fakes, monkeypatch, capsys):
+        fakes.tagged = ["AAAA0001"]
+        result = indexed("AAAA0001", facts=1)
+        result["index"]["facts"][0].update(unit=None, condition=None, ref=None)
+        fakes.search_indexes = {"AAAA0001": result}
+        _code, out, _err = run_cli(monkeypatch, capsys, "index", "search", "leakage")
+        assert out.splitlines()[1] == "p1 F0001 leakage rate = 5.34"
+
+    def test_markdown_names_the_items_without_hits_the_skipped_and_the_cut(self, fakes, monkeypatch,
+                                                                          capsys):
+        fakes.tagged = ["AAAA0001", "BBBB0001", "NONE0001", "ERRR0001"]
+        fakes.search_indexes = {
+            "AAAA0001": indexed("AAAA0001", facts=2), "BBBB0001": indexed("BBBB0001", facts=1),
+            "NONE0001": indexed("NONE0001", facts=0),
+            "ERRR0001": {"error": {"code": "no_index", "message": "no source index"}}}
+        _code, out, _err = run_cli(monkeypatch, capsys, "index", "search", "leakage",
+                                   "--max-items", "1")
+        assert out.startswith("## AAAA0001 Windback Seals (2018): 2 facts, 0 vocabulary\n")
+        assert "## BBBB0001" not in out
+        assert out.endswith("No hits: NONE0001\n"
+                            "Skipped ERRR0001: no_index: no source index\n"
+                            "1 more item(s) with hits cut by --max-items\n")
+
+    def test_markdown_says_so_when_there_is_nothing_to_search(self, fakes, monkeypatch, capsys):
+        code, out, _err = run_cli(monkeypatch, capsys, "index", "search", "leakage")
+        assert (code, out) == (0, "No items to search.\n")
+
+
+class TestIndexSkipsPymupdf:
+    """`main()` reroutes PyMuPDF's messages for every command except `index`."""
+
+    @pytest.fixture
+    def rerouted(self, fakes, monkeypatch):
+        """Calls to `_keep_pymupdf_off_stdout`; the fakes fixture stubs it, this one records."""
+        seen = []
+        monkeypatch.setattr(cli_standalone, "_keep_pymupdf_off_stdout", lambda: seen.append("called"))
+        return seen
+
+    @pytest.mark.parametrize("argv", [
+        ("--json", "index", "show", ATTACH),
+        ("--json", "index", "show", ATTACH, "--grep", "leakage"),
+        ("--json", "index", "search", "leakage"),
+    ])
+    def test_index_reads_do_not_call_it(self, rerouted, monkeypatch, capsys, argv):
+        code, _out, _err = run_cli(monkeypatch, capsys, *argv)
+        assert code == 0
+        assert rerouted == []
+
+    def test_index_push_does_not_call_it(self, rerouted, monkeypatch, capsys, index_file):
+        code, _out, _err = run_cli(monkeypatch, capsys, "--json", "index", "push", ATTACH,
+                                   "--from", str(index_file))
+        assert code == 0
+        assert rerouted == []
+
+    def test_a_failing_index_call_does_not_call_it(self, rerouted, monkeypatch, capsys):
+        code, _out, _err = run_cli(monkeypatch, capsys, "--json", "index", "search", ",")
+        assert code == 1
+        assert rerouted == []
+
+    def test_grep_still_calls_it(self, rerouted, monkeypatch, capsys):
+        code, _out, _err = run_cli(monkeypatch, capsys, "--json", "grep", ATTACH, "pressure ratio")
+        assert code == 0
+        assert rerouted == ["called"]
+
+    def test_another_command_still_calls_it(self, rerouted, monkeypatch, capsys):
+        monkeypatch.setitem(cli_standalone._CMD_MAP, "config", lambda args: None)
+        run_cli(monkeypatch, capsys, "--json", "config")
+        assert rerouted == ["called"]
+
+
 # ---------------------------------------------------------------------------
 # pdf_source
 # ---------------------------------------------------------------------------
@@ -1028,3 +1770,49 @@ class TestJsonOutputIsClean:
         pymupdf = pytest.importorskip("pymupdf")
         monkeypatch.delattr(pymupdf, "set_messages")
         cli_standalone._keep_pymupdf_off_stdout()
+
+
+#: Runs `main()` in a fresh interpreter with the index engines faked, then reports on stderr whether
+#: PyMuPDF got loaded. In process the module is long imported, so only a subprocess can tell.
+_NO_PYMUPDF_DRIVER = """
+import sys, types
+from unittest.mock import patch
+
+import zotero_mcp
+from zotero_mcp import cli_standalone, pdf_source
+
+engine = types.ModuleType("zotero_mcp.source_index")
+engine.show_index = lambda key, **kw: {"item_key": key, "note_keys": [], "parts": 1,
+                                       "index": {"facts": []}}
+sys.modules["zotero_mcp.source_index"] = engine
+zotero_mcp.source_index = engine
+argv = ["zotero-cli", *sys.argv[1:]]
+with patch.object(cli_standalone, "setup_zotero_environment"), \\
+        patch.object(pdf_source, "parent_key", lambda key: key), \\
+        patch.dict(cli_standalone._CMD_MAP, {"config": lambda args: None}), \\
+        patch.object(sys, "argv", argv):
+    cli_standalone.main()
+print("PYMUPDF-LOADED", "pymupdf" in sys.modules or "fitz" in sys.modules, file=sys.stderr)
+"""
+
+
+def _run_no_pymupdf_driver(*argv):
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(
+        [str(REPO / "src"), *filter(None, [os.environ.get("PYTHONPATH")])]))
+    return subprocess.run([sys.executable, "-c", _NO_PYMUPDF_DRIVER, *argv],
+                          capture_output=True, text=True, env=env, timeout=120)
+
+
+class TestIndexPathLoadsNoPymupdf:
+    def test_index_show_runs_without_importing_pymupdf(self):
+        proc = _run_no_pymupdf_driver("--json", "index", "show", "KEY00001")
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout)["ok"] is True
+        assert "PYMUPDF-LOADED False" in proc.stderr
+
+    def test_the_probe_sees_pymupdf_when_another_command_runs(self):
+        """The control: without it, a probe that never fires would pass the test above."""
+        pytest.importorskip("pymupdf")
+        proc = _run_no_pymupdf_driver("--json", "config")
+        assert proc.returncode == 0, proc.stderr
+        assert "PYMUPDF-LOADED True" in proc.stderr

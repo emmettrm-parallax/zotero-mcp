@@ -144,6 +144,9 @@ For those pages, look at the page itself if you can view images:
 zotero-cli read ITEM_KEY --start-page 4 --format image                         # PNG per page, up to 10
 zotero-cli read ITEM_KEY --start-page 4 --format image --rect 0.35,0.49,0.3,0.05   # zoom into one region
 zotero-cli --json tables ITEM_KEY --pages 4                                  # cells of each table on the page
+# An item tagged status/indexed has a source index. Search it before you read pages.
+zotero-cli --json index search "TERM,TERM" --expand                          # every indexed item, most facts first
+zotero-cli --json index show ITEM_KEY --grep "TERM,TERM" --expand --fields lead   # one item, a short line per hit
 ```
 
 To annotate, plan everything, check it, then write it in one run:

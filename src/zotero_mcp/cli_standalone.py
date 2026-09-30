@@ -746,10 +746,181 @@ def _format_index_push(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _format_filter_line(report: dict) -> str:
+    """The one-line summary of a filtered `index show`, from `data.filter`."""
+    total, matched = report.get("total") or {}, report.get("matched") or {}
+    returned, truncated = report.get("returned") or {}, report.get("truncated") or {}
+    broad = ", ".join(report.get("broad_terms") or [])
+    return (f"Filter: {matched.get('facts', 0)} of {total.get('facts', 0)} facts matched, "
+            f"{returned.get('facts', 0)} returned, {truncated.get('facts', 0)} cut by --limit; "
+            f"expanded {report.get('expanded_total', 0)}; broad [{broad}]")
+
+
 def _format_index_show(data: dict) -> str:
     head = (f"Source index for {data.get('item_key')}: {data.get('parts')} note part(s)"
             + (f" ({', '.join(data['note_keys'])})" if data.get("note_keys") else ""))
+    if data.get("filter"):
+        head += "\n" + _format_filter_line(data["filter"])
     return head + "\n\n" + json.dumps(data.get("index"), indent=2, ensure_ascii=False)
+
+
+def _fact_lead_line(fact: dict) -> str:
+    """`p5 F0012 quantity = value unit (condition) [ref]`; a null part is left out."""
+    def shown(key):
+        value = fact.get(key)
+        return "-" if value is None else value
+
+    line = f"p{shown('page')} {shown('id')} {shown('quantity')} = {shown('value')}"
+    for key, wrap in (("unit", "{}"), ("condition", "({})"), ("ref", "[{}]")):
+        if fact.get(key) is not None:
+            line += " " + wrap.format(fact[key])
+    return line
+
+
+def _format_index_search(data: dict) -> str:
+    blocks = []
+    for item in data.get("items") or []:
+        matched = (item.get("filter") or {}).get("matched") or {}
+        year = f" ({item['year']})" if item.get("year") else ""
+        title = f" {item['title']}" if item.get("title") else ""
+        lines = [f"## {item.get('item_key')}{title}{year}: "
+                 f"{matched.get('facts', 0)} facts, {matched.get('vocabulary', 0)} vocabulary"]
+        lines += [_fact_lead_line(fact) for fact in item.get("facts") or []]
+        blocks.append("\n".join(lines))
+    notes = []
+    if data.get("no_hits"):
+        notes.append("No hits: " + ", ".join(data["no_hits"]))
+    for skip in data.get("skipped") or []:
+        notes.append(f"Skipped {skip.get('item_key')}: {skip.get('code')}: {skip.get('message')}")
+    if data.get("items_truncated"):
+        notes.append(f"{data['items_truncated']} more item(s) with hits cut by --max-items")
+    if notes:
+        blocks.append("\n".join(notes))
+    return "\n\n".join(blocks) or "No items to search."
+
+
+def _index_terms(values, args) -> list:
+    """The terms of `index show --grep` or `index search`, checked before any read.
+
+    `parse_terms` refuses an empty list (`bad_grep`) and `check_terms` a pattern
+    that does not compile (`bad_regex`), so a bad call never reaches the notes.
+    """
+    from zotero_mcp import index_grep
+
+    terms = index_grep.parse_terms(values, regex=args.regex)
+    index_grep.check_terms(terms, regex=args.regex)
+    return terms
+
+
+def _filter_with_section(report: dict, section) -> dict:
+    """The filter report with `section` after `pages`, where the contract lists it."""
+    out = {}
+    for key, value in report.items():
+        out[key] = value
+        if key == "pages":
+            out["section"] = section
+    out.setdefault("section", section)
+    return out
+
+
+#: What `index show` applies when a filter flag is on and `--limit` is not. The
+#: parser cannot import `index_grep`, which loads only when a command runs, so
+#: this mirrors `index_grep.SHOW_LIMIT`; a test compares the two.
+_INDEX_SHOW_LIMIT = 40
+
+#: The entry lists of an index that `index search` returns for each item.
+_INDEX_SEARCH_LISTS = ("sections", "facts", "vocabulary", "tables_figures", "equations", "gaps")
+
+#: The parts of a filter report that stay on each item of `index search`.
+_INDEX_SEARCH_REPORT = ("expanded_terms", "expanded_total", "expanded_symbols", "broad_terms",
+                        "term_counts", "total", "matched", "returned", "truncated")
+
+
+def _index_show(args, ctx) -> dict:
+    """`index show`: the index as stored, or the filtered view when a filter flag is on."""
+    from zotero_mcp import pdf_source, source_index
+
+    pages = _parse_pages(args.pages)
+    filtered = args.grep is not None or args.fields is not None or args.limit is not None
+    if args.grep is None and (args.expand or args.regex):
+        raise _cli_json.CliError("--expand and --regex need --grep", code="bad_grep")
+    terms = None if args.grep is None else _index_terms(args.grep, args)
+    setup_zotero_environment()
+    data = source_index.show_index(pdf_source.parent_key(args.key), section=args.section, ctx=ctx)
+    if not filtered:
+        if pages is not None:
+            # After --section, so the two filters compose (AND). The slice
+            # checks the pages against the index header, not against a PDF.
+            from zotero_mcp import index_slice
+
+            data = {**data, "index": index_slice.filter_index_pages(data["index"], pages)}
+        return data
+
+    from zotero_mcp import index_grep
+
+    index, report = index_grep.apply_filters(
+        data["index"], pages=pages, terms=terms, regex=args.regex, expand=args.expand,
+        fields=args.fields or "full",
+        limit=_INDEX_SHOW_LIMIT if args.limit is None else args.limit,
+    )
+    return {**data, "index": index, "filter": _filter_with_section(report, args.section)}
+
+
+def _index_search(args, ctx) -> dict:
+    """`index search`: the terms in the index of each item of the set, most facts first."""
+    from zotero_mcp import index_grep, pdf_source, source_index
+
+    terms = _index_terms(args.terms, args)
+    setup_zotero_environment()
+    if args.items is not None:
+        requested = [key.strip() for key in args.items.split(",") if key.strip()]
+        keys = list(dict.fromkeys(pdf_source.parent_key(key) for key in requested))
+        tag = None
+    else:
+        requested, tag = None, args.tag
+        keys = list(dict.fromkeys(source_index.list_items_with_tag(tag)))
+    indexes = source_index.show_indexes(keys, ctx=ctx) if keys else {}
+
+    hits, no_hits, skipped = [], [], []
+    for key in keys:
+        result = indexes.get(key) or {"error": {"code": "error", "message": "no index was read"}}
+        if result.get("error"):
+            error = result["error"]
+            skipped.append({"item_key": key, "code": error.get("code") or "error",
+                            "message": error.get("message") or ""})
+            continue
+        index, report = index_grep.apply_filters(
+            result["index"], terms=terms, regex=args.regex, expand=args.expand,
+            fields=args.fields, limit=args.limit,
+        )
+        matched = report.get("matched") or {}
+        if not any(matched.values()):
+            no_hits.append(key)
+            continue
+        header = result["index"].get("header")
+        header = header if isinstance(header, dict) else {}
+        item = {
+            "item_key": key,
+            "title": header.get("title"),
+            "year": header.get("year"),
+            "attachment_key": header.get("attachment_key"),
+            "page_count": header.get("page_count"),
+            "filter": {name: report.get(name) for name in _INDEX_SEARCH_REPORT},
+            **{name: index.get(name, []) for name in _INDEX_SEARCH_LISTS},
+        }
+        hits.append(((-matched.get("facts", 0), -sum(matched.values()), key), item))
+
+    hits.sort(key=lambda pair: pair[0])
+    items = [item for _order, item in hits]
+    if args.max_items:
+        items = items[:args.max_items]
+    return {
+        "terms": terms, "regex": args.regex, "expand": args.expand, "fields": args.fields,
+        "limit": args.limit, "max_items": args.max_items, "tag": tag,
+        "items_requested": requested, "searched": len(keys),
+        "items_truncated": len(hits) - len(items), "items": items,
+        "no_hits": sorted(no_hits), "skipped": skipped,
+    }
 
 
 def cmd_index(args):
@@ -774,18 +945,9 @@ def cmd_index(args):
         )
         _emit_result(args, "index push", data, _format_index_push)
     elif args.subcommand == "show":
-        pages = _parse_pages(args.pages)
-        setup_zotero_environment()
-        data = source_index.show_index(
-            pdf_source.parent_key(args.key), section=args.section, ctx=ctx,
-        )
-        if pages is not None:
-            # After --section, so the two filters compose (AND). The slice
-            # checks the pages against the index header, not against a PDF.
-            from zotero_mcp import index_slice
-
-            data = {**data, "index": index_slice.filter_index_pages(data["index"], pages)}
-        _emit_result(args, "index show", data, _format_index_show)
+        _emit_result(args, "index show", _index_show(args, ctx), _format_index_show)
+    elif args.subcommand == "search":
+        _emit_result(args, "index search", _index_search(args, ctx), _format_index_search)
 
 
 def cmd_notes(args):
@@ -1244,6 +1406,17 @@ def _parse_rect(value, size=4, flag="--rect"):
     return rect
 
 
+def _nonneg_int(value: str) -> int:
+    """argparse type for --limit and --max-items: a whole number, 0 or more."""
+    try:
+        number = int(value)
+    except ValueError:
+        number = -1
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"must be a whole number from 0 up, got {value!r}")
+    return number
+
+
 def _parse_pages(value):
     """`all` -> None (every page); `3`, `3-6`, `1,4,6-9` -> sorted page list."""
     if value is None or str(value).strip().lower() == "all":
@@ -1624,7 +1797,7 @@ def build_parser() -> argparse.ArgumentParser:
                       help="lines finds ruled tables; text finds tables under a "
                            "'Table N' caption that have no ruled cells")
 
-    ix_p = sub.add_parser("index", help="Store or read a source index note on an item")
+    ix_p = sub.add_parser("index", help="Store, read or search source index notes")
     ix_sub = ix_p.add_subparsers(dest="subcommand", required=True)
     ixp = ix_sub.add_parser("push", help="Write an index JSON file into the item's notes")
     ixp.add_argument("key", help="Item key or PDF attachment key")
@@ -1640,9 +1813,37 @@ def build_parser() -> argparse.ArgumentParser:
     ixs.add_argument("--section", help="Only this section (S03) and its entries")
     ixs.add_argument("--pages",
                      help="Only entries on these pages: 3, 3-6, or 1,4,6-9 (with --section, both apply)")
+    # The filter flags default to None, so that the command sees what was given:
+    # any of --grep, --fields and --limit turns the filtered view on.
+    ixs.add_argument("--grep", action="append", metavar="TERM",
+                     help="Only entries that match TERM[,TERM]; repeat the flag to add terms (any term matches)")
+    ixs.add_argument("--regex", action="store_true", help="Treat each --grep value as one regex")
+    ixs.add_argument("--fields", choices=["lead", "full"],
+                     help="lead keeps a few short fields per entry, full the whole record (default full)")
+    ixs.add_argument("--expand", action="store_true",
+                     help="Also match the variants and symbols of the vocabulary entries that match a --grep term")
+    ixs.add_argument("--limit", type=_nonneg_int,
+                     help="Most entries of each kind to return, best matches first "
+                          "(default 40 with --grep, --fields or --limit; 0 means no cap)")
+    ixq = ix_sub.add_parser("search", help="Find terms in the indexes of many items at once")
+    ixq.add_argument("terms", nargs="+", metavar="TERM",
+                     help="Terms to find; each value splits on commas, so quote a term that has spaces")
+    ixq.add_argument("--items", metavar="K,K",
+                     help="Item or PDF attachment keys to search, instead of every item with --tag")
+    ixq.add_argument("--tag", default="status/indexed",
+                     help="Search every item that has this tag (ignored with --items)")
+    ixq.add_argument("--fields", choices=["lead", "full"], default="lead",
+                     help="lead keeps a few short fields per entry, full the whole record")
+    ixq.add_argument("--expand", action="store_true",
+                     help="Also match the variants and symbols of the vocabulary entries that match a TERM")
+    ixq.add_argument("--limit", type=_nonneg_int, default=10,
+                     help="Most entries of each kind to return for each item; 0 means no cap")
+    ixq.add_argument("--max-items", type=_nonneg_int, default=10,
+                     help="Most items with hits to return, most facts first; 0 means no cap")
+    ixq.add_argument("--regex", action="store_true", help="Treat each TERM as one regex")
     # A leaf parser is not wrapped by add_parser above, so it gets --json here.
     # SUPPRESS keeps a `--json` given before the command from being undone.
-    for leaf in (ixp, ixs):
+    for leaf in (ixp, ixs, ixq):
         leaf.add_argument("--json", action="store_true", dest="json_out",
                           default=argparse.SUPPRESS,
                           help="Emit a JSON envelope instead of markdown")
@@ -1972,9 +2173,13 @@ Commands returning structured data
   tables                data.pages[].tables[] -- header, rows, caption, rect_arg
   index push            data.note_keys, data.parts, data.counts
   index show            data.index -- the parsed index, or one section of it
+                        with --grep, --fields or --limit also data.filter{} -- terms, matched{}, truncated{}
+  index search          data.items[] -- hits per indexed item, most facts first; data.no_hits[], data.skipped[]
 
 grep, sections, tables and index also fail with a code a caller can branch on:
-no_pdf_attachment, bad_regex, bad_pages, no_index, index_exists, invalid_index.
+no_pdf_attachment, bad_regex, bad_pages, no_index, index_exists, invalid_index,
+bad_grep. An item that index search could not read is listed in data.skipped[]
+with the code no_index, invalid_index or error.
 
 Every other command returns {"text": "<the markdown it would have
 printed>"}. That is deliberate: those commands' answers really are status
@@ -2034,7 +2239,9 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    _keep_pymupdf_off_stdout()
+    if args.command != "index":
+        # The index commands never import pymupdf; skipping it saves 0.16 s a call.
+        _keep_pymupdf_off_stdout()
     try:
         handler(args)
     except KeyboardInterrupt:
