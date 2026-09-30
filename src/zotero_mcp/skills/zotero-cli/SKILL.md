@@ -143,6 +143,7 @@ For those pages, look at the page itself if you can view images:
 ```bash
 zotero-cli read ITEM_KEY --start-page 4 --format image                         # PNG per page, up to 10
 zotero-cli read ITEM_KEY --start-page 4 --format image --rect 0.35,0.49,0.3,0.05   # zoom into one region
+zotero-cli --json tables ITEM_KEY --pages 4                                  # cells of each table on the page
 ```
 
 To annotate, plan everything, check it, then write it in one run:
