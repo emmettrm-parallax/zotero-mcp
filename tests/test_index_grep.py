@@ -394,9 +394,9 @@ def test_expansion_adds_the_term_the_variants_and_the_symbol_parts():
     assert hits == {
         "F1": ["seepage"], "F2": ["loss rate"], "F3": ["m_leak"], "F4": ["ml"], "F5": ["leakage", "leakage flow"],
     }
-    # The vocabulary entry itself hits: the user term, then its own forms, at most five.
+    # The vocabulary entry itself hits: the user term, then its own forms, at most three.
     assert ids(subset["vocabulary"]) == ["leakage flow"]
-    assert subset["vocabulary"][0]["hit"] == ["leakage", "leakage flow", "seepage", "loss rate", "m_leak"]
+    assert subset["vocabulary"][0]["hit"] == ["leakage", "leakage flow", "seepage"]
 
 
 def test_a_short_form_matches_symbol_fields_only():
@@ -507,17 +507,25 @@ def test_the_vocabulary_before_the_pages_cut_drives_expansion():
     assert report["total"]["vocabulary"] == 0
 
 
-def test_report_cap_40_with_expanded_total():
-    variants = [f"form{n:02d}" for n in range(60)]
+def test_report_cap_80_with_expanded_total():
+    variants = [f"form{n:03d}" for n in range(100)]
     index = make_index(
         vocabulary=[vocab("leakage", variants=variants)],
-        facts=[fact("F1", statement="only form55 here")],
+        facts=[fact("F1", statement="only form095 here")],
     )
     subset, report = grep(index, ["leakage"], expand=True)
-    assert report["expanded_total"] == 60
-    assert report["expanded_terms"] == variants[:40]
+    assert report["expanded_total"] == 100
+    assert report["expanded_terms"] == variants[:80]
     assert ids(subset["facts"]) == ["F1"]                                    # a form past the cap still matches
-    assert subset["facts"][0]["hit"] == ["form55"]
+    assert subset["facts"][0]["hit"] == ["form095"]
+
+
+def test_a_typical_expansion_is_reported_in_full():
+    """46 forms (the windback "leakage" case) all fit under the report cap, so none is hidden."""
+    variants = [f"form{n:02d}" for n in range(46)]              # the term "leakage" is the user term: not a form
+    index = make_index(vocabulary=[vocab("leakage", variants=variants)])
+    _subset, report = grep(index, ["leakage"], expand=True)
+    assert report["expanded_total"] == 46 and report["expanded_terms"] == variants
 
 
 def test_the_first_form_is_kept_in_vocabulary_order():
@@ -530,18 +538,23 @@ def test_the_first_form_is_kept_in_vocabulary_order():
     assert report["expanded_total"] == 4
 
 
-def test_hit_lists_user_terms_then_expanded_forms_then_symbols_at_most_five():
+def test_hit_lists_user_terms_then_expanded_forms_then_symbols_at_most_three():
     index = make_index(
         vocabulary=[vocab("leakage", variants=["seepage", "drip", "weep", "ooze", "leak"], symbol="q")],
         facts=[fact("F1", statement="leakage and Leakage rate, seepage, drip, weep, ooze, leak", symbol="q")],
     )
     subset, _report = grep(index, ["leak", "rate"], expand=True)
-    assert subset["facts"][0]["hit"] == ["leak", "rate", "leakage", "seepage", "drip"]
+    assert subset["facts"][0]["hit"] == ["leak", "rate", "leakage"]
+    subset, _report = grep(index, ["leak", "rate", "drip", "weep"], expand=True)     # user terms alone fill it
+    assert subset["facts"][0]["hit"] == ["leak", "rate", "drip"]
     subset, _report = grep(index, ["leakage"], expand=True)
-    assert subset["facts"][0]["hit"] == ["leakage", "seepage", "drip", "weep", "ooze"]
+    assert subset["facts"][0]["hit"] == ["leakage", "seepage", "drip"]
     index["facts"][0]["statement"] = "seepage only"
     subset, _report = grep(index, ["leakage"], expand=True)
     assert subset["facts"][0]["hit"] == ["seepage", "q"]                     # the symbol comes last
+    index["facts"][0]["statement"] = "seepage, drip, weep"
+    subset, _report = grep(index, ["leakage"], expand=True)
+    assert subset["facts"][0]["hit"] == ["seepage", "drip", "weep"]          # the symbol no longer fits
 
 
 def test_expand_finds_nothing_more_when_the_vocabulary_has_no_bridge():
@@ -598,6 +611,45 @@ def test_more_distinct_hits_rank_higher_inside_a_tier():
     assert ids(out["facts"]) == ["F2", "F4"]
     out, _report = apply_filters(index, terms=["alpha", "beta", "gamma"], fields="lead", limit=3)
     assert ids(out["facts"]) == ["F1", "F2", "F4"]      # equal hits: the earlier position wins
+
+
+def test_a_user_term_hit_beats_expanded_only_hits_however_many_they_are():
+    """The hit list stops at HIT_CAP, so three expanded hits and thirty tie: the tier decides first."""
+    forms = ["seepage", "drip", "weep", "ooze", "trickle"]
+    facts = [fact(f"F{n}", statement=", ".join(forms)) for n in range(1, 5)]        # 5 expanded hits, capped at 3
+    facts.append(fact("F5", statement="leakage only"))                              # one user-term hit, last
+    index = make_index(vocabulary=[vocab("leakage", variants=forms)], facts=facts)
+    out, report = apply_filters(index, terms=["leakage"], expand=True, fields="lead", limit=1)
+    assert ids(out["facts"]) == ["F5"]
+    assert len(out["facts"][0]["hit"]) == 1
+    full, _report = grep(index, ["leakage"], expand=True)
+    assert [len(e["hit"]) for e in full["facts"]] == [index_grep.HIT_CAP] * 4 + [1]
+    out, report = apply_filters(index, terms=["leakage"], expand=True, fields="lead", limit=2)
+    assert ids(out["facts"]) == ["F1", "F5"]                     # the user hit, then the earliest expanded-only hit
+    assert report["truncated"]["facts"] == 3
+
+
+def test_the_rank_ties_at_the_hit_cap_and_the_earlier_position_wins():
+    facts = [fact("F1", statement="aaa bbb ccc"), fact("F2", statement="aaa bbb ccc ddd"),
+             fact("F3", statement="aaa bbb ccc ddd eee"), fact("F4", statement="aaa")]
+    index = make_index(facts=facts)
+    terms = ["aaa", "bbb", "ccc", "ddd", "eee"]
+    out, _report = apply_filters(index, terms=terms, fields="lead", limit=2)
+    assert ids(out["facts"]) == ["F1", "F2"]                     # three hits or more all count 3: index order
+    assert all(entry["hit"] == ["aaa", "bbb", "ccc"] for entry in out["facts"])
+    out, _report = apply_filters(index, terms=terms, fields="lead", limit=3)
+    assert ids(out["facts"]) == ["F1", "F2", "F3"]               # F4 (one hit) ranks below the saturated three
+
+
+def test_a_user_term_hit_stays_first_in_a_capped_hit_list():
+    forms = ["seepage", "drip", "weep", "ooze"]
+    index = make_index(
+        vocabulary=[vocab("leakage", variants=forms)],
+        facts=[fact("F1", statement="leakage " + " ".join(forms))],
+    )
+    subset, _report = grep(index, ["leakage"], expand=True)
+    assert subset["facts"][0]["hit"] == ["leakage", "seepage", "drip"]
+    assert index_grep._rank(subset["facts"][0], {"leakage"}, 0)[0] == 0
 
 
 def test_truncated_counts_by_kind():
@@ -847,8 +899,8 @@ def test_no_terms_returns_the_whole_index_within_the_limit():
 
 def test_constants():
     assert KINDS == ("facts", "vocabulary", "tables_figures", "equations", "gaps")
-    assert index_grep.MAX_EXPAND_ENTRIES == 25 and index_grep.REPORT_EXPANDED_CAP == 40
-    assert index_grep.HIT_CAP == 5 and index_grep.SHOW_LIMIT == 40 and index_grep.SEARCH_LIMIT == 10
+    assert index_grep.MAX_EXPAND_ENTRIES == 25 and index_grep.REPORT_EXPANDED_CAP == 80
+    assert index_grep.HIT_CAP == 3 and index_grep.SHOW_LIMIT == 40 and index_grep.SEARCH_LIMIT == 10
 
 
 # ---------------------------------------------------------------------------

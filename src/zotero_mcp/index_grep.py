@@ -1,19 +1,19 @@
 """Term search over a source index, for ``zotero-cli index show --grep`` and ``index search``.
 
-A research agent asks "what does this source say about X?" and should not have to pull the
-whole index for it. ``apply_filters`` runs the whole chain on an index that ``show_index`` has
-read: pages, vocabulary cut, term match, limit, projection. Every function here is pure: it
-takes dicts and returns new dicts. The stdlib, ``text_match``, ``index_slice`` and ``cli_json``
-are the only imports, so the index path never loads pymupdf.
+A research agent asks "what does this source say about X?" It should not pull the whole index
+for the answer. ``apply_filters`` runs the whole chain on an index that ``show_index`` returns:
+pages, vocabulary cut, term match, limit, projection. Every function here is pure. It takes
+dicts and returns new dicts. The imports are the standard library, ``text_match``,
+``index_slice`` and ``cli_json``, so the index path never loads pymupdf.
 
-Match rule (the same as ``pdf_grep``): each field value is normalised with
-``text_match.normalize_text``. A literal term of 3 or more characters ignores case and joins
-its words with ``[\\s\\-]*``, so "carry-over" also finds "carryover" and "carry over". A literal
-term of 1 or 2 characters matches a whole word and is case-sensitive, so "Cd" does not hit
-every "cd". With ``regex`` a term is a pattern with ``re.IGNORECASE``. A term never spans two
-fields: each field is searched on its own. (The fields also join into one string with
-``"\\x1f"`` for a cheap first test. ``\\s`` matches ``"\\x1f"`` in Python, so a hit on the joined
-string is only kept when it stays inside one field.)
+Match rule (the same as ``pdf_grep``): ``text_match.normalize_text`` normalises each field
+value. A literal term of 3 or more characters ignores case and joins its words with
+``[\\s\\-]*``, so "carry-over" also finds "carryover" and "carry over". A literal term of 1 or
+2 characters matches a whole word and keeps case, so "Cd" does not hit every "cd". With
+``regex`` a term is a pattern with ``re.IGNORECASE``. A term never spans two fields, because
+each field gets its own search. The fields also join into one string with ``"\\x1f"`` for a
+cheap first test. ``\\s`` matches ``"\\x1f"`` in Python, so a hit on the joined string counts
+only when it stays inside one field.
 
 Fields that match, by kind:
 
@@ -26,12 +26,13 @@ Fields that match, by kind:
 Ids, page numbers, ``section_id``, ``found_by``, ``confidence`` and ``value_num`` never match.
 Terms never cut ``sections``.
 
-Expansion (``expand``): the vocabulary is a synonym table. For each user term the entries whose
-term, variants or symbol match it lend their forms (the term, the variants, the symbol split on
-","). A term that matches more than ``MAX_EXPAND_ENTRIES`` entries is too broad to expand and
-goes to ``broad_terms``. A form of 3 or more characters with a letter is matched by the literal
-rule. A shorter form is a symbol: it matches only a symbol field, by exact case-sensitive
-equality, because "s" or "n" would otherwise hit every fact.
+Expansion (``expand``): the vocabulary works as a synonym table. Each user term borrows the
+forms of the entries whose term, variants or symbol match it. A form is the term, a variant, or
+one part of the symbol (the symbol split on ","). A term that matches more than
+``MAX_EXPAND_ENTRIES`` entries is too broad. It goes to ``broad_terms`` and does not expand. A
+form of 3 or more characters with a letter uses the literal rule. A shorter form is a symbol.
+It matches only a symbol field, by exact equality with case, because "s" or "n" would hit every
+fact.
 """
 
 from __future__ import annotations
@@ -45,8 +46,8 @@ from zotero_mcp.text_match import BadRegexError, compile_term, normalize_text
 
 KINDS = ("facts", "vocabulary", "tables_figures", "equations", "gaps")
 MAX_EXPAND_ENTRIES = 25  # a user term that matches more vocabulary entries is not expanded
-REPORT_EXPANDED_CAP = 40  # expanded_terms in the report; expanded_total keeps the full count
-HIT_CAP = 5  # "hit" lists at most this many terms
+REPORT_EXPANDED_CAP = 80  # expanded_terms in the report; expanded_total keeps the full count
+HIT_CAP = 3  # "hit" lists at most this many terms; the rank reads len(hit), so it stops at this number
 SHOW_LIMIT = 40  # entries per kind, index show
 SEARCH_LIMIT = 10  # entries per kind, index search
 
@@ -85,10 +86,11 @@ _FOLD_EXTRA = {0x130: "i", 0x131: "i", 0x17F: "s"}
 def parse_terms(values: list[str], *, regex: bool) -> list[str]:
     """The search terms from the repeated ``--grep`` (or positional) values.
 
-    Without ``regex`` each value splits on ","; parts are stripped, empty parts are dropped, and a
-    duplicate (same casefold of ``normalize_text``) is dropped: the first is kept. With ``regex``
-    each value is one pattern, kept as typed; a blank one is dropped and an exact duplicate is
-    dropped. Raises ``CliError`` with the code ``bad_grep`` when no term is left.
+    Without ``regex``, each value splits on ",". The function strips each part and drops the empty
+    parts. It also drops a duplicate (the same casefold of ``normalize_text``) and keeps the first.
+    With ``regex``, each value is one pattern and stays as typed. The function drops a blank
+    pattern and an exact duplicate. It raises ``CliError`` with the code ``bad_grep`` when no term
+    is left.
     """
     terms: list[str] = []
     seen: set[str] = set()
@@ -159,7 +161,7 @@ def _symbol_parts(value) -> list[str]:
 
 
 def _entry_symbols(kind: str, entry: dict) -> list[str]:
-    """The symbol strings that a short expansion form is compared with."""
+    """The symbol strings that a short expansion form must equal."""
     if kind in ("facts", "vocabulary"):
         return _symbol_parts(entry.get("symbol"))
     if kind == "equations" and isinstance(entry.get("variables"), list):
@@ -281,16 +283,18 @@ def filter_index_terms(index: dict, terms, *, regex: bool = False, expand: bool 
     """The entries of ``index`` that match ``terms``, and a report.
 
     Returns ``(subset, report)``. ``subset`` is ``index`` with each of the five arrays cut to the
-    entries that match: each is a shallow copy with a ``hit`` list (the matched user terms in term
-    order, then the matched expanded forms, then the symbols; at most ``HIT_CAP``). Other keys
-    pass unchanged. ``vocabulary`` is the table that ``expand`` reads (default: the vocabulary of
-    ``index``); the caller passes the vocabulary from before a page cut. The report has ``terms``,
-    ``expanded_terms`` (first ``REPORT_EXPANDED_CAP``), ``expanded_total``, ``expanded_symbols``,
-    ``broad_terms``, ``term_counts`` (entries of all kinds for each user term), ``total`` (entries
-    before the match) and ``matched``, the last two by kind.
+    entries that match. Each kept entry is a shallow copy with a ``hit`` list: the matched user
+    terms in term order, then the matched expanded forms, then the symbols, at most ``HIT_CAP``.
+    Other keys pass unchanged. ``vocabulary`` is the table that ``expand`` reads (default: the
+    vocabulary of ``index``). The caller passes the vocabulary from before a page cut.
 
-    Raises ``CliError`` with the code ``bad_regex`` for a term that does not compile. The input is
-    not changed.
+    The report has ``terms``, ``expanded_terms`` (the first ``REPORT_EXPANDED_CAP``),
+    ``expanded_total``, ``expanded_symbols``, ``broad_terms``, ``term_counts`` (the entries of all
+    kinds for each user term), ``total`` (the entries before the match) and ``matched``. The last
+    two go by kind.
+
+    Raises ``CliError`` with the code ``bad_regex`` for a term that does not compile. The input
+    does not change.
     """
     terms = list(terms or [])
     users = [_Matcher(term, regex=regex) for term in terms]
@@ -364,10 +368,12 @@ def _rank(entry, user_terms: set[str], position: int) -> tuple[int, int, int]:
 def limit_index(index: dict, limit: int, *, terms=()):
     """Cut each of the five arrays to ``limit`` entries. ``0`` means no cap.
 
-    Returns ``(subset, returned, truncated)``, the last two by kind. With ``terms`` (the user
-    terms that made the ``hit`` lists) an entry is ranked by ``(0 if a user term hit else 1,
-    -number of hits, index position)``; without them, by index position. The kept entries stay in
-    index order. ``truncated`` is the number of entries cut. The input is not changed.
+    Returns ``(subset, returned, truncated)``. The last two go by kind. With ``terms`` (the user
+    terms that made the ``hit`` lists), the rank of an entry is ``(0 if a user term hit else 1,
+    -len(hit), index position)``. Without them, the rank is the index position. The first key
+    decides first, so an entry with a user-term hit always beats an entry with expanded hits only.
+    A ``hit`` list stops at ``HIT_CAP``, and so does ``len(hit)``. The kept entries stay in index
+    order. ``truncated`` is the number of entries cut. The input does not change.
     """
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
         raise ValueError(f"limit must be an integer of 0 or more, got {limit!r}")
@@ -397,8 +403,8 @@ def limit_index(index: dict, limit: int, *, terms=()):
 def vocabulary_on_pages(index: dict, pages: list[int]) -> dict:
     """A copy of ``index`` whose vocabulary keeps the entries that appear on any of ``pages``.
 
-    An entry with no pages is dropped. The other keys pass unchanged. The pages are not
-    checked: ``index_slice.filter_index_pages`` does that.
+    An entry with no pages is dropped. The other keys pass unchanged. This function does not check
+    the pages. ``index_slice.filter_index_pages`` does that.
     """
     wanted = {page for page in pages if isinstance(page, int) and not isinstance(page, bool)}
     out = dict(index)
@@ -444,18 +450,19 @@ def project_index(index: dict, fields: str = "lead") -> dict:
 
 def apply_filters(index: dict, *, pages=None, terms=None, regex: bool = False, expand: bool = False,
                   fields: str = "full", limit: int = SHOW_LIMIT):
-    """The whole chain on an index that ``show_index`` has read: ``(index, report)``.
+    """The whole chain on an index that ``show_index`` returned: ``(index, report)``.
 
-    Pages (``index_slice.filter_index_pages``, then the vocabulary cut to entries on those pages),
-    term match, limit, projection. All filters AND. ``expand`` reads the vocabulary from before the
-    page cut. The report is the ``filter`` object of ``index show`` without ``section``: ``terms``,
-    ``regex``, ``expand``, ``fields``, ``limit``, ``pages``, ``expanded_terms``, ``expanded_total``,
-    ``expanded_symbols``, ``broad_terms``, ``term_counts`` and ``total``, ``matched``, ``returned``,
-    ``truncated`` (each by kind, all five kinds). ``total`` counts the entries after the pages cut
-    and before the match. The input is never changed.
+    The steps are pages (``index_slice.filter_index_pages``, then the vocabulary cut to the entries
+    on those pages), term match, limit, projection. All filters AND. ``expand`` reads the
+    vocabulary from before the page cut. The report is the ``filter`` object of ``index show``
+    without ``section``. Its keys are ``terms``, ``regex``, ``expand``, ``fields``, ``limit``,
+    ``pages``, ``expanded_terms``, ``expanded_total``, ``expanded_symbols``, ``broad_terms``,
+    ``term_counts``, ``total``, ``matched``, ``returned`` and ``truncated``. The last four go by
+    kind, for all five kinds. ``total`` counts the entries after the pages cut and before the
+    match. The input never changes.
 
-    Raises ``CliError`` with the code ``bad_pages`` or ``bad_regex``; ``ValueError`` for a bad
-    ``fields`` or ``limit``.
+    Raises ``CliError`` with the code ``bad_pages`` or ``bad_regex``. Raises ``ValueError`` for a
+    bad ``fields`` or ``limit``.
     """
     if fields not in ("lead", "full"):
         raise ValueError(f"fields must be 'lead' or 'full', got {fields!r}")

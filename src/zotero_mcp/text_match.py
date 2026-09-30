@@ -1,23 +1,23 @@
 """
-Text normalisation and term matching, shared by the PDF and the source-index searches.
+Text normalisation and term matching for the PDF search and the source-index search.
 
-This module is stdlib only. ``pdf_grep`` imports pymupdf; ``index_grep`` must not, so the
-matching rules live here and both modules import them.
+This module uses only the standard library. ``pdf_grep`` imports pymupdf. ``index_grep``
+must not. The matching rules live here, and both modules import them.
 
-Normalisation (``normalize_text``) is what makes a plain term find what a person sees:
+``normalize_text`` makes a plain term find what a person sees:
 
-- The U+FB00-U+FB06 ligature code points are expanded ("ﬁ" becomes "fi").
-- A word hyphenated at a line end ("pres-" / "sure") is joined. An uppercase next letter
-  ("Navier-" / "Stokes") is a compound: the hyphen stays and the line break goes.
-- Unicode dashes (U+2010-U+2015, U+2212) become ``-``.
-- Every whitespace run becomes one space.
-- No NFKC: it turns 10⁻³ into 10-3 and would corrupt exponents and units.
+- It expands the U+FB00-U+FB06 ligature code points ("ﬁ" becomes "fi").
+- It joins a word that a line end splits ("pres-" / "sure"). An uppercase next letter
+  ("Navier-" / "Stokes") marks a compound. The hyphen stays and the line break goes.
+- It changes the Unicode dashes (U+2010-U+2015, U+2212) to ``-``.
+- It changes every whitespace run to one space.
+- It does not use NFKC. NFKC turns 10⁻³ into 10-3 and would damage exponents and units.
 
-``compile_term`` turns a term into a pattern. A literal term is escaped and its tokens are
-joined with ``[\\s\\-]*``: the term "carry-over" also finds "carryover" and "carry over".
+``compile_term`` turns a term into a pattern. It escapes a literal term and joins its words
+with ``[\\s\\-]*``. The term "carry-over" then also finds "carryover" and "carry over".
 
-``pdf_grep.NORMALIZER_VERSION`` keys the page-text cache. Bump it when this module changes
-what ``normalize_text`` returns.
+``pdf_grep.NORMALIZER_VERSION`` keys the page-text cache. Raise it when a change to this
+module changes what ``normalize_text`` returns.
 """
 
 from __future__ import annotations
