@@ -583,7 +583,7 @@ def _pick_index_notes(children: dict[str, list[dict]], parent_key: str) -> list[
     """The index notes of one parent in a ``get_children`` result, in part order.
 
     An h1 of ``Source index`` opens each note, and a trashed note is skipped.
-    A parent that is absent from ``children`` failed to look up: ``error``.
+    A parent that is absent from ``children`` raises ``error`` (no such item).
     """
     if parent_key not in children:
         raise SourceIndexError(f"cannot list the notes of item {parent_key}: no such item?", "error")
@@ -715,7 +715,7 @@ def _filter_section(index: dict, section: str) -> dict:
 
 
 def _read_index(parent_key: str, notes: list[_IndexNote], section=None) -> dict:
-    """The ``show_index`` result from the index notes already found. ``no_index`` when there are none."""
+    """Build the ``show_index`` result from index notes already found. Raise ``no_index`` when there are none."""
     if not notes:
         raise SourceIndexError(f"item {parent_key} has no source index", "no_index")
     index = parse_index_notes([n.html for n in notes])
