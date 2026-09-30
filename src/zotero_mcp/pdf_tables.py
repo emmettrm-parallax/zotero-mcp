@@ -20,7 +20,10 @@ Two strategies, one per kind of table:
     no other caption between), and runs ``find_tables(strategy="text")`` on the
     box around the chain. It keeps the largest table found. No chain means no
     table. A full-page ``text`` run is not used: on a page of body text it
-    returns the text as one table (measured).
+    returns the text as one table (measured). The ``bbox`` of a ``text`` table
+    is the chain box, because the ``text`` strategy drops words that fit no
+    column and its own box can cut off a whole column (measured on Chupp,
+    Tables 2 and 5).
 
 A caption is a text line that starts with ``Table`` and a label. It belongs to
 a table when it lies within ``LAYOUT_CAPTION_MAX_DISTANCE`` of a page height
@@ -80,7 +83,8 @@ def tables_for_pdf(pdf_path, *, pages: list[int] | None, strategy: str = "lines"
         ``{"id": "p17-t1", "bbox": [x, y, w, h], "rect_arg": "x,y,w,h", "header": [str],
         "rows": [[str | None]], "caption": str | None}``. ``id`` counts from 1, top to
         bottom. ``bbox`` is normalised 0-1 with 4 decimals; ``rect_arg`` feeds
-        ``read --format image --rect``. ``rows`` exclude the header row.
+        ``read --format image --rect``. For ``text``, the box spans the whole rule chain. ``rows``
+        exclude the header row.
 
     Raises:
         ValueError: ``strategy`` is unknown, or a page is outside the document.
@@ -140,11 +144,11 @@ def _page_tables(page, page_no: int, strategy: str) -> list[dict]:
         found = _text_tables(page, captions)
     else:
         found = _lines_tables(page, captions)
-    found.sort(key=lambda item: (item[0].bbox[1], item[0].bbox[0]))
+    found.sort(key=lambda item: (item[2][1], item[2][0]))
     width, height = page.rect.width, page.rect.height
     return [
-        _table_dict(table, caption, f"p{page_no}-t{index}", width, height)
-        for index, (table, caption) in enumerate(found, start=1)
+        _table_dict(table, caption, f"p{page_no}-t{index}", width, height, box)
+        for index, (table, caption, box) in enumerate(found, start=1)
     ]
 
 
@@ -170,8 +174,9 @@ def _x_overlap(a0: float, a1: float, b0: float, b1: float) -> float:
     return max(0.0, min(a1, b1) - max(a0, b0)) / max(1e-6, min(a1 - a0, b1 - b0))
 
 
-def _table_dict(table, caption: str | None, table_id: str, width: float, height: float) -> dict:
-    x0, y0, x1, y1 = table.bbox
+def _table_dict(table, caption: str | None, table_id: str, width: float, height: float, box=None) -> dict:
+    """The output dict of one table. ``box`` (page points) replaces ``table.bbox`` when given."""
+    x0, y0, x1, y1 = table.bbox if box is None else box
     x = min(max(x0 / width, 0.0), 1.0)
     y = min(max(y0 / height, 0.0), 1.0)
     w = min(max((x1 - x0) / width, 0.0), 1.0 - x)
@@ -194,11 +199,11 @@ def _table_dict(table, caption: str | None, table_id: str, width: float, height:
 # ---------------------------------------------------------------------------
 
 def _lines_tables(page, captions: list[dict]) -> list[tuple]:
-    """``(table, caption text | None)`` for each ruled grid; a sparse grid with no caption is dropped."""
+    """``(table, caption text | None, box)`` for each ruled grid; a sparse grid with no caption is dropped."""
     tables = _find_tables(page, strategy="lines")
     attached = _attach_captions(tables, captions, page.rect.height)
     return [
-        (table, caption)
+        (table, caption, tuple(table.bbox))
         for table, caption in zip(tables, attached)
         if caption is not None or _filled_share(table) >= LINES_MIN_FILLED
     ]
@@ -270,7 +275,11 @@ def _page_rules(page) -> list[tuple[float, float, float]]:
 
 
 def _text_tables(page, captions: list[dict]) -> list[tuple]:
-    """``(table, caption text)`` for each caption that has a rule chain under it and a table in the chain box."""
+    """``(table, caption text, box)`` for each caption that has a rule chain under it and a table in the chain box.
+
+    ``box`` is the chain box, not the box of the table: the text strategy drops the words that fit no
+    column, so its table can be narrower than the rules. The full box lets the reader see every column.
+    """
     if not captions:
         return []
     height = page.rect.height
@@ -291,8 +300,12 @@ def _text_tables(page, captions: list[dict]) -> list[tuple]:
                 continue
             if rule[0] - chain[-1][0] > TEXT_CHAIN_MAX_GAP * height:
                 break
-            if any(chain[-1][0] < other["bbox"][1] < rule[0] for other in captions):
-                break  # another table's caption sits between the two rules
+            if any(
+                chain[-1][0] < other["bbox"][1] < rule[0]
+                and _x_overlap(other["bbox"][0], other["bbox"][2], chain[0][1], chain[0][2]) > 0
+                for other in captions
+            ):
+                break  # another table's caption sits between the two rules, in the same columns
             if _x_overlap(rule[1], rule[2], chain[0][1], chain[0][2]) >= TEXT_CHAIN_MIN_OVERLAP:
                 chain.append(rule)
         clip = pymupdf.Rect(
@@ -303,5 +316,10 @@ def _text_tables(page, captions: list[dict]) -> list[tuple]:
         )
         clipped = _find_tables(page, clip=clip, strategy="text")
         if clipped:
-            found.append((max(clipped, key=lambda table: table.row_count * table.col_count), caption["text"]))
+            best = max(clipped, key=lambda table: table.row_count * table.col_count)
+            box = (
+                min(clip.x0, best.bbox[0]), min(clip.y0, best.bbox[1]),
+                max(clip.x1, best.bbox[2]), max(clip.y1, best.bbox[3]),
+            )
+            found.append((best, caption["text"], box))
     return found

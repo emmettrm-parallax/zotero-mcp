@@ -203,9 +203,20 @@ class TestTextStrategy:
         assert table["header"] == ["Alloy", "Temp", "Modulus"]
         assert _filled(table["rows"]) == [["Inconel", "650", "200"], ["Haynes", "1150", "211"]]
         x, y, w, h = table["bbox"]
-        # inside the box the rules span (x 72-432, y 200-248 pt)
-        assert x >= 70 / PAGE_W and x + w <= 434 / PAGE_W
-        assert y >= 198 / PAGE_H and y + h <= 250 / PAGE_H
+        # the box is the rule chain (x 72-432, y 200-248 pt) with a 2 pt margin, to 4 decimals
+        assert (x, y) == pytest.approx((70 / PAGE_W, 198 / PAGE_H), abs=1e-3)
+        assert (x + w, y + h) == pytest.approx((434 / PAGE_W, 250 / PAGE_H), abs=1e-3)
+
+    def test_the_box_spans_the_rules_when_the_text_is_narrower(self, tmp_path):
+        """The text strategy drops words that fit no column, so its own box can miss a column."""
+        def draw(page, n):
+            _caption(page, "Table 1. Alloy limits", 188)
+            _booktabs(page, PLAIN, col_w=60, width=400)  # the words end near x 250; the rules run to x 472
+
+        (table,) = _tables(_new_pdf(tmp_path, draw), strategy="text")
+        x, y, w, h = table["bbox"]
+        assert x + w >= 472 / PAGE_W - 1e-3
+        assert table["rect_arg"] == f"{x:.4f},{y:.4f},{w:.4f},{h:.4f}"
 
     def test_text_needs_a_caption(self, tmp_path):
         path = _new_pdf(tmp_path, lambda page, n: _booktabs(page, ALLOYS))
@@ -242,17 +253,42 @@ class TestTextStrategy:
         assert _filled(two["rows"]) == [["AlSi", "5"], ["NiCrAl", "3"]]
         assert one["bbox"][1] + one["bbox"][3] < two["bbox"][1]
 
+    def test_a_caption_in_the_other_column_does_not_end_the_chain(self, tmp_path):
+        rows = [["Seal", "Leak"]] + [[f"Type{i}", str(i)] for i in range(1, 8)]
+
+        def draw(page, n):
+            _caption(page, "Table 1. Left column", 188)
+            _booktabs(page, rows, y=200, col_w=90, width=200)  # rules at y 200, 216 and 328, x 72-272
+            _caption(page, "Table 2. Right column", 260, x=340)  # level with the table body, no rules under it
+
+        (table,) = _tables(_new_pdf(tmp_path, draw), strategy="text")
+        assert table["caption"] == "Table 1. Left column"
+        assert len(_filled(table["rows"])) == 7
+
     def test_rules_drawn_in_pieces_are_joined(self, tmp_path):
         def draw(page, n):
             for start in (72, 172, 272):  # three pieces, 2 pt apart
                 page.draw_line((start, 300), (start + 98, 300), width=0.8)
-            page.draw_line((72, 330), (200, 330), width=0.8)  # narrower than 15% of the page: 92 pt
-            page.draw_line((72, 360), (100, 360), width=0.8)  # short piece: not a rule
+            page.draw_line((72, 330), (200, 330), width=0.8)  # one piece, 128 pt: wider than 15% of the page
+            page.draw_line((72, 360), (100, 360), width=0.8)  # 28 pt: under 15% of the page, not a rule
 
         doc = pymupdf.open(_new_pdf(tmp_path, draw))
         rules = pdf_tables._page_rules(doc[0])
         doc.close()
         assert [(round(y), round(x0), round(x1)) for y, x0, x1 in rules] == [(300, 72, 370), (330, 72, 200)]
+
+    def test_narrow_pieces_join_into_a_rule_but_a_dashed_line_is_not_a_rule(self, tmp_path):
+        """Pieces of RULE_PIECE_MIN_WIDTH or more join first; the joined rule must then span 15% of the page."""
+        def draw(page, n):
+            for start in (72, 114, 156, 198):  # four 40 pt pieces (each under 15% of the page), 2 pt apart
+                page.draw_line((start, 300), (start + 40, 300), width=0.8)
+            for start in range(72, 372, 10):  # a dashed line: 8 pt dashes, 2 pt gaps
+                page.draw_line((start, 330), (start + 8, 330), width=0.8)
+
+        doc = pymupdf.open(_new_pdf(tmp_path, draw))
+        rules = pdf_tables._page_rules(doc[0])
+        doc.close()
+        assert [(round(y), round(x0), round(x1)) for y, x0, x1 in rules] == [(300, 72, 238)]
 
 
 class TestPages:
