@@ -51,3 +51,7 @@ Expected: `ok: true`, three seal items, and `Write mode: local`.
 ## 5. Added 2026-09-29: source-index tools
 
 Branch `feat/source-index-tools` is checked out here (local, not pushed). It adds `zotero-cli grep`, `sections`, `index push` and `index show`. The Meridian skills `source-index` and `zotero-research` use them. Three items carry index notes and the tag `status/indexed`: 3CKPN9EK, QSEELLWH, EBC5ZSRK. Worktrees `a0` to `a3` under `~/Github/zotero-mcp-wt/` hold the merged task branches. Open scope and audit numbers: Meridian memory note `source-index-pipeline-built`.
+
+## 6. Added 2026-09-30: round 2
+
+Branch `feat/source-index-tools` is pushed to `fork` at ed70464. New commands: `zotero-cli tables KEY --pages RANGE --strategy lines|text` and `index show KEY --pages RANGE`. New error code: `bad_pages`. The three items carry the b2 indexes with 7, 6 and 13 note parts. Worktrees `f1` to `f3` under `~/Github/zotero-mcp-wt/` hold the merged round-2 branches. Remove `a0` to `a3` and `f1` to `f3` after the branch merges. Audit numbers and open items: Meridian memory note `source-index-pipeline-built`.
