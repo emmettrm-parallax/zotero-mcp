@@ -30,9 +30,13 @@ Expansion (``expand``): the vocabulary works as a synonym table. Each user term 
 forms of the entries whose term, variants or symbol match it. A form is the term, a variant, or
 one part of the symbol (the symbol split on ","). A term that matches more than
 ``MAX_EXPAND_ENTRIES`` entries is too broad. It goes to ``broad_terms`` and does not expand. A
-form of 3 or more characters with a letter uses the literal rule. A shorter form is a symbol.
-It matches only a symbol field, by exact equality with case, because "s" or "n" would hit every
+form whose pattern key equals a user term or an earlier form is dropped. The pattern key is the
+edge hyphens plus the casefolded words, so "brush-seal" adds nothing to "brush seal". A form of
+3 or more characters with a letter uses the literal rule. A shorter form is a symbol. It
+matches only a symbol field, by exact equality with case, because "s" or "n" would hit every
 fact.
+
+A ``lead`` record leaves out each key whose value is null. A ``full`` record stays as it is.
 """
 
 from __future__ import annotations
@@ -51,7 +55,7 @@ HIT_CAP = 3  # "hit" lists at most this many terms; the rank reads len(hit), so 
 SHOW_LIMIT = 40  # entries per kind, index show
 SEARCH_LIMIT = 10  # entries per kind, index search
 
-#: The keys a ``lead`` record keeps. A key that the entry lacks is null.
+#: The keys a ``lead`` record keeps. A key that the entry lacks, or holds as null, is left out.
 LEAD_FIELDS = {
     "facts": ("id", "page", "kind", "quantity", "value", "unit", "condition", "ref", "section_id"),
     "vocabulary": ("term", "kind", "symbol", "variants", "pages"),
@@ -187,6 +191,19 @@ def _expansion_fields(entry: dict) -> list[str]:
     return forms
 
 
+def _pattern_key(text: str) -> tuple:
+    """The identity of a literal pattern: two texts with one key match the same strings (case aside).
+
+    The key is the edge hyphens plus the casefolded words. "brush seal", "brush-seal" and
+    "Brush  Seal" share a key. "brushseal" does not, because its pattern has no word join.
+    """
+    plain = normalize_text(text)
+    words = tuple(word.casefold() for word in _TOKEN_SPLIT.split(plain) if word)
+    if not words:  # only dashes and spaces
+        return (False, (plain,), False)
+    return (plain.startswith("-"), words, plain.endswith("-"))
+
+
 class _Hay:
     """The fields of one entry, and the same fields joined for a first, cheap test."""
 
@@ -255,9 +272,9 @@ def _expansion(terms: list[str], users: list[_Matcher], vocabulary: list) -> tup
     """The expansion forms ``(literal matchers, symbols, broad_terms)`` for the user terms."""
     entries = [(entry, _Hay(fields)) for entry in vocabulary if isinstance(entry, dict)
                for fields in [_expansion_fields(entry)] if fields]
-    user_keys = {normalize_text(term).casefold() for term in terms}
+    user_keys = {_pattern_key(term) for term in terms}
     forms: list[_Matcher] = []
-    form_keys: set[str] = set()
+    form_keys: set[tuple] = set()
     symbols: list[str] = []
     broad: list[str] = []
     for term, matcher in zip(terms, users):
@@ -267,7 +284,7 @@ def _expansion(terms: list[str], users: list[_Matcher], vocabulary: list) -> tup
             continue
         for entry in lending:
             for form in _expansion_fields(entry):
-                key = form.casefold()
+                key = _pattern_key(form)
                 if key in user_keys:
                     continue
                 if len(form) < _SHORT_TERM:
@@ -421,7 +438,7 @@ def vocabulary_on_pages(index: dict, pages: list[int]) -> dict:
 def _lead(kind: str, entry):
     if not isinstance(entry, dict):
         return copy.deepcopy(entry)
-    lead = {name: copy.deepcopy(entry.get(name)) for name in LEAD_FIELDS[kind]}
+    lead = {name: copy.deepcopy(entry[name]) for name in LEAD_FIELDS[kind] if entry.get(name) is not None}
     if "hit" in entry:
         lead["hit"] = list(entry["hit"])
     return lead
@@ -431,9 +448,9 @@ def project_index(index: dict, fields: str = "lead") -> dict:
     """The index with each record cut to its ``fields``: ``"lead"`` or ``"full"``.
 
     ``full`` is a deep copy: the records stay as they are, with their ``hit``. ``lead`` keeps the
-    ``LEAD_FIELDS`` of each record (null for a missing key) and its ``hit``. ``header``,
-    ``sections``, ``schema`` and any unknown key pass in full. The result shares nothing with the
-    input.
+    ``LEAD_FIELDS`` of each record and its ``hit``, and leaves out each key whose value is null.
+    ``header``, ``sections``, ``schema`` and any unknown key pass in full. The result shares
+    nothing with the input.
     """
     if fields == "full":
         return copy.deepcopy(index)

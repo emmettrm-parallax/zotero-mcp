@@ -454,6 +454,34 @@ def test_a_form_equal_to_a_user_term_is_dropped():
     assert report["expanded_terms"] == ["seepage"]
 
 
+def test_a_spelling_of_a_user_term_is_not_a_form_and_the_hit_lists_the_term_once():
+    """"brush-seal" has the pattern key of the user term "brush seal": it adds no form and no second hit."""
+    index = make_index(
+        vocabulary=[vocab("brush seal", variants=["brush-seal", "Brush  Seal", "bristle"])],
+        facts=[fact("F1", statement="a brush seal here"), fact("F2", statement="a brush-seal here"),
+               fact("F3", statement="bristle tip")],
+    )
+    subset, report = grep(index, ["brush seal"], expand=True)
+    assert report["expanded_terms"] == ["bristle"] and report["expanded_total"] == 1
+    assert "brush-seal" not in report["expanded_terms"]
+    assert {e["id"]: e["hit"] for e in subset["facts"]} == {
+        "F1": ["brush seal"], "F2": ["brush seal"], "F3": ["bristle"],
+    }
+
+
+def test_forms_with_one_pattern_key_are_one_form():
+    index = make_index(vocabulary=[vocab(
+        "leakage", variants=["back flow", "back-flow", "Back  Flow", "backflow", "tipx", "-tipx"])])
+    subset, report = grep(index, ["leakage"], expand=True)
+    # The pattern joins words with [\s\-]*: the first three are one pattern. "backflow" has no join, and an
+    # edge hyphen is literal, so "-tipx" is not "tipx".
+    assert report["expanded_terms"] == ["back flow", "backflow", "tipx", "-tipx"]
+    assert report["expanded_total"] == 4
+    index["facts"] = [fact("F1", statement="a back-flow path")]
+    subset, _report = grep(index, ["leakage"], expand=True)
+    assert subset["facts"][0]["hit"] == ["back flow"]
+
+
 def test_25_entries_expand_and_26_go_to_broad_terms():
     def vocabulary(count):
         return [vocab(f"seal type {n}", variants=[f"form number {n}"]) for n in range(count)]
@@ -743,14 +771,37 @@ def test_lead_key_sets_per_kind_plus_hit():
     assert "statement" not in out["facts"][0] and "quote" not in out["facts"][0]
 
 
-def test_lead_has_a_null_for_a_missing_key_and_no_hit_without_terms():
-    entry = fact("F1")
-    del entry["ref"]
-    del entry["unit"]
+def test_lead_omits_a_key_that_is_null_or_missing_and_full_keeps_it():
+    entry = fact("F1", quantity="gap", value="0.1", unit=None, condition=None)   # unit, condition: null
+    del entry["ref"]                                                              # ref: missing
     index = make_index(facts=[entry])
+    lead = project_index(index, "lead")["facts"][0]
+    assert lead == {"id": "F1", "page": 1, "kind": "text", "quantity": "gap", "value": "0.1", "section_id": "S01"}
+    full = project_index(index, "full")["facts"][0]
+    assert full["unit"] is None and full["condition"] is None and "ref" not in full
+    lead, _report = apply_filters(index, terms=["gap"], fields="lead", limit=40)
+    assert "unit" not in lead["facts"][0] and "condition" not in lead["facts"][0]
+    assert lead["facts"][0]["hit"] == ["gap"]                                     # hit is never null
+    full, _report = apply_filters(index, terms=["gap"], fields="full", limit=40)
+    assert full["facts"][0]["unit"] is None and full["facts"][0]["condition"] is None
+
+
+def test_lead_omits_null_keys_of_every_kind_and_keeps_values_that_are_not_null():
+    index = make_index(
+        facts=[fact("F1", quantity="q", value=0, unit="", condition=None)],          # 0 and "" are not null
+        vocabulary=[vocab("clearance", symbol=None, variants=[], pages=[3])],        # [] is not null
+        tables_figures=[figure("T1", label=None, caption="A plot.")],
+        equations=[equation("E1", label=None, latex="x = y")],
+        gaps=[gap("G1", kind="other")],
+    )
     out = project_index(index, "lead")
-    assert out["facts"][0]["ref"] is None and out["facts"][0]["unit"] is None
-    assert "hit" not in out["facts"][0]
+    assert out["facts"][0] == {"id": "F1", "page": 1, "kind": "text", "quantity": "q", "value": 0, "unit": "",
+                               "section_id": "S01"}
+    assert out["vocabulary"][0] == {"term": "clearance", "kind": "term", "variants": [], "pages": [3]}
+    assert out["tables_figures"][0] == {"id": "T1", "page": 1, "caption": "A plot."}
+    assert out["equations"][0] == {"id": "E1", "page": 1, "latex": "x = y"}
+    assert out["gaps"][0] == {"id": "G1", "page": 1, "kind": "other"}
+    assert all("hit" not in record for kind in KINDS for record in out[kind])          # no terms: no hit
 
 
 def test_lead_passes_header_sections_schema_and_unknown_keys_in_full():
