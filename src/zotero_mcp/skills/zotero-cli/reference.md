@@ -167,21 +167,21 @@ sub-command. Run `zotero-cli --json-schema` for the output contract.
  - `<key>` -- Item key or PDF attachment key
  - `--section` -- Only this section (S03) and its entries
  - `--pages` -- Only entries on these pages: 3, 3-6, or 1,4,6-9 (with --section, both apply)
- - `--grep` -- Only entries that match TERM[,TERM]; repeat the flag to add terms (any term matches)
+ - `--grep` -- Only entries that match TERM[,TERM]. Repeat the flag to add terms. Any term matches.
  - `--regex` -- Treat each --grep value as one regex
  - `--fields` -- one of `lead`, `full` -- lead keeps a few short fields per entry, full the whole record (default full)
  - `--expand` -- Also match the variants and symbols of the vocabulary entries that match a --grep term
- - `--limit` -- Most entries of each kind to return, best matches first (default 40 with --grep, --fields or --limit; 0 means no cap)
+ - `--limit` -- Most entries of each kind to return, best matches first. Default 40 with --grep or --fields. 0 means no cap.
 
 ### `index search`
 
- - `<terms>` -- Terms to find; each value splits on commas, so quote a term that has spaces
+ - `<terms>` -- Terms to find. Each value splits on commas, so quote a term that has spaces.
  - `--items` -- Item or PDF attachment keys to search, instead of every item with --tag
  - `--tag` -- default `status/indexed` -- Search every item that has this tag (ignored with --items)
  - `--fields` -- one of `lead`, `full` -- default `lead` -- lead keeps a few short fields per entry, full the whole record
  - `--expand` -- Also match the variants and symbols of the vocabulary entries that match a TERM
- - `--limit` -- default `10` -- Most entries of each kind to return for each item; 0 means no cap
- - `--max-items` -- default `10` -- Most items with hits to return, most facts first; 0 means no cap
+ - `--limit` -- default `10` -- Most entries of each kind to return for each item. 0 means no cap.
+ - `--max-items` -- default `10` -- Most items with hits to return, most facts first. 0 means no cap.
  - `--regex` -- Treat each TERM as one regex
 
 ## `notes (alias: n)`

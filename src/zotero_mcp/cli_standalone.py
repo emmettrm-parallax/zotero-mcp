@@ -1816,18 +1816,18 @@ def build_parser() -> argparse.ArgumentParser:
     # The filter flags default to None, so that the command sees what was given:
     # any of --grep, --fields and --limit turns the filtered view on.
     ixs.add_argument("--grep", action="append", metavar="TERM",
-                     help="Only entries that match TERM[,TERM]; repeat the flag to add terms (any term matches)")
+                     help="Only entries that match TERM[,TERM]. Repeat the flag to add terms. Any term matches.")
     ixs.add_argument("--regex", action="store_true", help="Treat each --grep value as one regex")
     ixs.add_argument("--fields", choices=["lead", "full"],
                      help="lead keeps a few short fields per entry, full the whole record (default full)")
     ixs.add_argument("--expand", action="store_true",
                      help="Also match the variants and symbols of the vocabulary entries that match a --grep term")
     ixs.add_argument("--limit", type=_nonneg_int,
-                     help="Most entries of each kind to return, best matches first "
-                          "(default 40 with --grep, --fields or --limit; 0 means no cap)")
+                     help="Most entries of each kind to return, best matches first. "
+                          "Default 40 with --grep or --fields. 0 means no cap.")
     ixq = ix_sub.add_parser("search", help="Find terms in the indexes of many items at once")
     ixq.add_argument("terms", nargs="+", metavar="TERM",
-                     help="Terms to find; each value splits on commas, so quote a term that has spaces")
+                     help="Terms to find. Each value splits on commas, so quote a term that has spaces.")
     ixq.add_argument("--items", metavar="K,K",
                      help="Item or PDF attachment keys to search, instead of every item with --tag")
     ixq.add_argument("--tag", default="status/indexed",
@@ -1837,9 +1837,9 @@ def build_parser() -> argparse.ArgumentParser:
     ixq.add_argument("--expand", action="store_true",
                      help="Also match the variants and symbols of the vocabulary entries that match a TERM")
     ixq.add_argument("--limit", type=_nonneg_int, default=10,
-                     help="Most entries of each kind to return for each item; 0 means no cap")
+                     help="Most entries of each kind to return for each item. 0 means no cap.")
     ixq.add_argument("--max-items", type=_nonneg_int, default=10,
-                     help="Most items with hits to return, most facts first; 0 means no cap")
+                     help="Most items with hits to return, most facts first. 0 means no cap.")
     ixq.add_argument("--regex", action="store_true", help="Treat each TERM as one regex")
     # A leaf parser is not wrapped by add_parser above, so it gets --json here.
     # SUPPRESS keeps a `--json` given before the command from being undone.
@@ -2178,7 +2178,7 @@ Commands returning structured data
 
 grep, sections, tables and index also fail with a code a caller can branch on:
 no_pdf_attachment, bad_regex, bad_pages, no_index, index_exists, invalid_index,
-bad_grep. An item that index search could not read is listed in data.skipped[]
+bad_grep. Index search lists an item that it cannot read in data.skipped[],
 with the code no_index, invalid_index or error.
 
 Every other command returns {"text": "<the markdown it would have
