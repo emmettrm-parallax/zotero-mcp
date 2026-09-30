@@ -55,3 +55,11 @@ Branch `feat/source-index-tools` is checked out here (local, not pushed). It add
 ## 6. Added 2026-09-30: round 2
 
 Branch `feat/source-index-tools` is pushed to `fork` at ed70464. New commands: `zotero-cli tables KEY --pages RANGE --strategy lines|text` and `index show KEY --pages RANGE`. New error code: `bad_pages`. The three items carry the b2 indexes with 7, 6 and 13 note parts. Worktrees `f1` to `f3` under `~/Github/zotero-mcp-wt/` hold the merged round-2 branches. Remove `a0` to `a3` and `f1` to `f3` after the branch merges. Audit numbers and open items: Meridian memory note `source-index-pipeline-built`.
+
+## 7. Added 2026-09-30: round 3
+
+Branch `feat/source-index-tools` holds the round-3 merges. It is not pushed.
+New: `index show` filters an index. Example: `zotero-cli --json index show 3CKPN9EK --grep leakage --expand --fields lead`.
+New: `index search` reads every indexed item. Example: `zotero-cli --json index search "windback,leakage" --expand`.
+New error code: `bad_grep`. It means an empty term list, or `--expand` or `--regex` without `--grep`.
+Remove the worktrees `r3f1` to `r3f3` under `~/Github/zotero-mcp-wt/` after the branch merges.
