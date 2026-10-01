@@ -956,11 +956,13 @@ def split_panels(page, bbox, *, mask_text: bool = False, scale: float = 1.5) -> 
                 continue
             if len(block[4].split()) < PANEL_MASK_WORDS and not _parse_caption_block(block[4]):
                 continue
+            # Block boxes use the unrotated page. The render and the result use page.rect.
+            text_box = pymupdf.Rect(block[:4]) * page.rotation_matrix
             area = pymupdf.IRect(
-                int(block[0] * scale) - 1,
-                int(block[1] * scale) - 1,
-                int(block[2] * scale) + 1,
-                int(block[3] * scale) + 1,
+                int(text_box.x0 * scale) - 1,
+                int(text_box.y0 * scale) - 1,
+                int(text_box.x1 * scale) + 1,
+                int(text_box.y1 * scale) + 1,
             ) & pix.irect
             if not area.is_empty:
                 pix.set_rect(area, (255,))

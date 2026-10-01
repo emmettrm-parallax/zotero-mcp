@@ -118,6 +118,25 @@ class TestSyntheticPanels:
         assert len(unmasked) >= 2
         assert unmasked[0][1] < truth[0][1]  # the paragraph sits above the panel
 
+    def test_mask_lands_on_the_text_inside_a_sub_box(self):
+        # The clip starts far from the page origin, so a mask rect in the wrong frame misses the text.
+        truth = [[0.55, 0.62, 0.35, 0.22]]
+        _doc, page = _raster_page(truth)
+        assert page.insert_textbox(pymupdf.Rect(300, 300, 560, 460), LONG_TEXT * 2, fontsize=8) > 0
+        bbox = [0.45, 0.30, 0.50, 0.60]
+        assert len(split_panels(page, bbox)) == 2
+        _assert_boxes_match(split_panels(page, bbox, mask_text=True), truth)
+
+    def test_mask_follows_a_rotated_page(self):
+        # Text blocks come in unrotated page space. The cells come in the rotated frame.
+        frame = [0.15, 0.10, 0.70, 0.25]
+        _doc, page = _raster_page([frame])
+        assert page.insert_textbox(pymupdf.Rect(60, 400, 552, 560), LONG_TEXT * 2, fontsize=10) > 0
+        page.set_rotation(90)
+        fx, fy, fw, fh = frame
+        turned = [1.0 - fy - fh, fx, fh, fw]  # a quarter turn clockwise
+        _assert_boxes_match(split_panels(page, [0.0, 0.0, 1.0, 1.0], mask_text=True), [turned])
+
     def test_caption_block_is_masked_even_when_short(self):
         truth = [[0.15, 0.08, 0.70, 0.30]]
         _doc, page = _raster_page(truth)
