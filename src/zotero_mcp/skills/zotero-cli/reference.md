@@ -137,6 +137,7 @@ sub-command. Run `zotero-cli --json-schema` for the output contract.
  - `--order` -- one of `page`, `score` -- default `page` -- Order pages by number, or by hit density
  - `--no-cache` -- Do not use the page-text cache
  - `--jobs` -- Worker processes for text extraction
+ - `--text` -- Print one 'pN: snippet' line per hit instead of markdown. Does not combine with --json
 
 ## `sections`
 
@@ -398,6 +399,7 @@ sub-command. Run `zotero-cli --json-schema` for the output contract.
  - `--format` -- one of `text`, `image` -- default `text` -- image writes PNG page images (up to 10 pages) for math, figures and tables
  - `--rect` -- With --format image: crop the start page to x,y,width,height (normalized 0-1), e.g. from `zotero-cli layout`
  - `--out` -- With --format image: directory for the PNG files (default: a new temporary directory)
+ - `--text` -- Print plain page text with '--- page N ---' separators, no title header. Needs --format text. Does not combine with --json
 
 ## `attach`
 

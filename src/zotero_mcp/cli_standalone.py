@@ -657,6 +657,9 @@ def cmd_grep(args):
     """Count and locate terms in a PDF attachment, page by page."""
     import re
 
+    as_plain_text = getattr(args, "text", False)
+    if as_plain_text and _json_mode(args):
+        raise _cli_json.CliError("--text does not combine with --json", code="bad_flags")
     pages = _parse_pages(args.pages)
     if args.regex:
         # Reported before the PDF is fetched, like a bad --rect.
@@ -678,6 +681,14 @@ def cmd_grep(args):
             )
         except re.error as exc:
             raise _cli_json.CliError(f"Bad regex: {exc}", code="bad_regex") from exc
+    if as_plain_text:
+        if not data.get("total_hits"):
+            print("no hits", file=sys.stderr)
+            return
+        print(pdf_grep.format_grep_text(data))
+        if data.get("truncated"):
+            print("snippets were cut by max-hits", file=sys.stderr)
+        return
     _emit_result(args, "grep", _with_source(pdf, data), pdf_grep.format_grep_markdown)
 
 
@@ -1446,10 +1457,20 @@ def cmd_read(args):
     """Read a page range out of an item's PDF, as text or as page images."""
     rect = _parse_rect(getattr(args, "rect", None))
     as_image = getattr(args, "format", "text") == "image"
+    as_plain_text = getattr(args, "text", False)
+    if as_plain_text and (_json_mode(args) or as_image):
+        raise _cli_json.CliError("--text does not combine with --json or --format image",
+                                 code="bad_flags")
     if rect is not None and not as_image:
         raise _cli_json.CliError("--rect needs --format image", code="bad_rect")
     setup_zotero_environment()
     from zotero_mcp.tools import read_pdf as read_pdf_mod
+
+    if as_plain_text:
+        print(read_pdf_mod.read_pdf_page_texts(
+            args.item_key, args.start_page, args.end_page, ctx=_ctx(args),
+        ))
+        return
 
     if as_image:
         import os
@@ -1777,6 +1798,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Order pages by number, or by hit density")
     gr_p.add_argument("--no-cache", action="store_true", help="Do not use the page-text cache")
     gr_p.add_argument("--jobs", type=int, help="Worker processes for text extraction")
+    gr_p.add_argument("--text", action="store_true",
+                      help="Print one 'pN: snippet' line per hit instead of markdown. "
+                           "Does not combine with --json")
 
     sc_p = sub.add_parser("sections", help="Split a PDF into sections for reading in parts")
     sc_p.add_argument("key", help="Item key or PDF attachment key")
@@ -2039,6 +2063,9 @@ def build_parser() -> argparse.ArgumentParser:
                                      "(normalized 0-1), e.g. from `zotero-cli layout`")
     rd_p.add_argument("--out", help="With --format image: directory for the PNG files "
                                     "(default: a new temporary directory)")
+    rd_p.add_argument("--text", action="store_true",
+                      help="Print plain page text with '--- page N ---' separators, "
+                           "no title header. Needs --format text. Does not combine with --json")
 
     # attach
     at_p = sub.add_parser("attach", help="Attach a file or link a URL to an item")

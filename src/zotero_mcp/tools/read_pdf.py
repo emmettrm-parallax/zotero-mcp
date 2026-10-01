@@ -370,6 +370,55 @@ def read_pdf_text(
         raise PdfReadError(f"Error reading PDF pages: {str(e)}") from e
 
 
+def read_pdf_page_texts(
+    item_key: str,
+    start_page: int,
+    end_page: int | None = None,
+    *,
+    ctx: Context,
+) -> str:
+    """Plain text for a page range: a ``--- page N ---`` line, then that page's text.
+
+    Shares the extraction with :func:`read_pdf_text` (``_page_range``,
+    ``extract_pdf``, ``_garbled_content_flags``), but carries no title header
+    and no size warning -- it is for a caller that wants the page text alone,
+    such as ``zotero-cli read --text``.
+    """
+    try:
+        with _page_range(item_key, start_page, end_page,
+                         max_pages=_TEXT_MAX_PAGES, ctx=ctx) as (pdf_path, _title, _total_pages,
+                                                                 actual_end, _clamped_note):
+            try:
+                # extract_pdf takes 0-indexed pages. The tool's API is 1-indexed.
+                doc = extract_pdf(pdf_path, pages=list(range(start_page - 1, actual_end)))
+            except Exception as exc:
+                raise PdfReadError(
+                    f"Could not read PDF for item {item_key}: {exc}",
+                    code="pdf_unreadable",
+                ) from exc
+            flags = _garbled_content_flags(pdf_path, doc)
+
+        output = []
+        for page_index, text in zip(doc.page_numbers, doc.pages):
+            output.append(f"--- page {page_index + 1} ---")
+            text = text.strip()
+            if text:
+                output.append(text)
+            elif page_index in doc.needs_ocr:
+                output.append("[No text layer on this page -- it is a scanned image]")
+            else:
+                output.append("[No extractable text on this page]")
+            if page_index in flags:
+                output.append(flags[page_index])
+        return "\n".join(output)
+
+    except PdfReadError:
+        raise
+    except Exception as e:
+        ctx.error(f"Error reading PDF pages: {str(e)}")
+        raise PdfReadError(f"Error reading PDF pages: {str(e)}") from e
+
+
 def _garbled_content_flags(pdf_path: str, doc) -> dict[int, str]:
     """A note per page (0-indexed) naming what its extracted text cannot carry.
 
