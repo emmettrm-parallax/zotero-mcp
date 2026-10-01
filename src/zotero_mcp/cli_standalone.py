@@ -1804,7 +1804,7 @@ def build_parser() -> argparse.ArgumentParser:
     gr_p = sub.add_parser("grep", help="Count and locate terms in a PDF, page by page")
     gr_p.add_argument("key", help="Item key or PDF attachment key")
     gr_p.add_argument("terms", nargs="+", metavar="TERM",
-                      help="Terms to find; each is counted on its own")
+                      help="Terms to find. Each is counted on its own")
     gr_p.add_argument("--regex", action="store_true", help="Treat each TERM as a regex")
     gr_p.add_argument("--word", action="store_true", help="Match whole words only")
     gr_p.add_argument("--pages", default="all",
@@ -1812,7 +1812,7 @@ def build_parser() -> argparse.ArgumentParser:
     gr_p.add_argument("--context", type=int, default=300,
                       help="Characters of context on each side of a match")
     gr_p.add_argument("--max-hits", type=int, default=200,
-                      help="Cap on snippets returned; counts always cover every hit")
+                      help="Cap on snippets returned. Counts always cover every hit")
     gr_p.add_argument("--order", choices=["page", "score"], default="page",
                       help="Order pages by number, or by hit density")
     gr_p.add_argument("--no-cache", action="store_true", help="Do not use the page-text cache")
@@ -1828,7 +1828,7 @@ def build_parser() -> argparse.ArgumentParser:
     sc_p.add_argument("--max-level", type=int, default=2,
                       help="Deepest outline level that starts a section")
     sc_p.add_argument("--chunk-pages", type=int, default=8,
-                      help="Longest section in pages; also the chunk size with no outline")
+                      help="Longest section in pages. Also the chunk size with no outline")
     sc_p.add_argument("--inventory", action="store_true",
                       help="List the tables, figures and equations in each section")
 
@@ -1837,7 +1837,7 @@ def build_parser() -> argparse.ArgumentParser:
     tb_p.add_argument("--pages", required=True,
                       help="Pages to read: all, 3, 3-6, or 1,4,6-9")
     tb_p.add_argument("--strategy", choices=["lines", "text"], default="lines",
-                      help="lines finds ruled tables; text finds tables under a "
+                      help="lines finds ruled tables. text finds tables under a "
                            "'Table N' caption that have no ruled cells")
 
     ix_p = sub.add_parser("index", help="Store, read or search source index notes")
@@ -1845,7 +1845,7 @@ def build_parser() -> argparse.ArgumentParser:
     ixp = ix_sub.add_parser("push", help="Write an index JSON file into the item's notes")
     ixp.add_argument("key", help="Item key or PDF attachment key")
     ixp.add_argument("--from", dest="from_file", required=True, metavar="FILE",
-                     help="Index JSON file; - reads stdin")
+                     help="Index JSON file. Use - to read stdin")
     ixp.add_argument("--replace", action="store_true",
                      help="Replace the item's existing index instead of failing")
     ixp.add_argument("--tags", help="Comma-separated tags to add to the parent item")
@@ -1896,7 +1896,7 @@ def build_parser() -> argparse.ArgumentParser:
     ixcp = ixc_sub.add_parser("push", help="Write or replace an item's source card")
     ixcp.add_argument("key", help="Item key or PDF attachment key")
     ixcp.add_argument("--from", dest="from_file", default="-", metavar="FILE",
-                      help="Card JSON file; - reads stdin (default)")
+                      help="Card JSON file. Use - to read stdin, the default.")
     # A leaf parser is not wrapped by add_parser above, so it gets --json here.
     # SUPPRESS keeps a `--json` given before the command from being undone.
     for leaf in (ixp, ixs, ixq, ixc, ixcp):

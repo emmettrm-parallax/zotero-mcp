@@ -1228,7 +1228,7 @@ class TestIndexSearch:
         _code, body = _search(monkeypatch, capsys, "leakage", "--tag",
                               "status/checked,status/flagged")
         assert [tag for tag, _kw in fakes.tag_calls] == ["status/checked", "status/flagged"]
-        # BBBB0001 comes from both tags; the union keeps it once, where it first appeared.
+        # BBBB0001 comes from both tags. The union keeps it once, where it first appeared.
         assert fakes.show_indexes[0][0] == ["AAAA0001", "BBBB0001", "CCCC0001"]
         assert body["data"]["searched"] == 3
         assert body["data"]["tag"] == "status/checked,status/flagged"

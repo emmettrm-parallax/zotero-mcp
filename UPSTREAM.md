@@ -26,20 +26,29 @@ rebase or a merge never touches them:
 
 - `HANDOFF.md`, `UPSTREAM.md`, `fork_test_baseline.txt`
 - `.github/workflows/tests.yml`
-- `scripts/apply_tag_plan.py`, `scripts/meridian_tag_plan_2026-09-28.json`
-- `src/zotero_mcp/index_grep.py`, `index_slice.py`, `source_index.py`,
-  `text_match.py`
+- `scripts/apply_tag_plan.py`, `scripts/meridian_tag_plan_2026-09-28.json`,
+  `scripts/compare_test_baseline.py`
+- `src/zotero_mcp/index_grep.py`, `index_query.py`, `index_slice.py`,
+  `source_card.py`, `source_index.py`, `text_match.py`
 - `src/zotero_mcp/pdf_grep.py`, `pdf_sections.py`, `pdf_source.py`,
   `pdf_tables.py`
+- `src/zotero_mcp/tools/index_tools.py`
 - `tests/fixtures/source_index_sample.json`
-- `tests/test_cli_source_commands.py`, `test_index_grep.py`,
-  `test_index_slice.py`, `test_pdf_grep.py`, `test_pdf_sections.py`,
-  `test_pdf_tables.py`, `test_source_index.py`
+- `tests/live/test_source_card_live.py`
+- `tests/test_cli_source_commands.py`, `test_cli_text_output.py`,
+  `test_compare_test_baseline.py`, `test_index_grep.py`,
+  `test_index_lead_line.py`, `test_index_slice.py`,
+  `test_mcp_index_tools.py`, `test_pdf_grep.py`, `test_pdf_sections.py`,
+  `test_pdf_tables.py`, `test_source_card.py`, `test_source_index.py`
 
-The fork also edits five upstream files: `scripts/gen_skill_reference.py`,
-`cli_standalone.py`, `skills/zotero-cli/SKILL.md`, `skills/zotero-cli/reference.md`,
-and `tests/fixtures/README.md`. An upstream change to one of these five
-is the most likely source of a merge conflict.
+The fork also edits eleven upstream files: `README.md`, `docs/tools.md`,
+`scripts/gen_skill_reference.py`, `src/zotero_mcp/cli_standalone.py`,
+`src/zotero_mcp/skills/zotero-cli/SKILL.md`,
+`src/zotero_mcp/skills/zotero-cli/reference.md`,
+`src/zotero_mcp/tools/__init__.py`, `src/zotero_mcp/tools/read_pdf.py`,
+`src/zotero_mcp/toolsets.py`, `tests/fixtures/README.md`, and
+`tests/test_description_tokens.py`. An upstream change to one of these
+eleven is the most likely source of a merge conflict.
 
 ## Rebase routine
 
@@ -50,10 +59,18 @@ Run this when upstream moves and the fork needs its fixes.
    3,700 tests and months of history. A rebase would replay every fork
    commit against a moving target and rewrite commits already pushed to
    `fork`. A merge keeps the history and asks git to resolve once.
-3. Run the suite: `uv sync --extra pdf && uv run --with pytest --with
-   pytest-timeout --with pytest-asyncio --with pytest-httpserver python -m
-   pytest tests -q -p no:cacheprovider --continue-on-collection-errors`.
-4. Compare the FAILED and ERROR lines against `fork_test_baseline.txt`.
-   A new one is a real regression from the merge. A line that no longer
-   appears means a known failure is fixed upstream. Update the baseline.
+3. Run the suite the same way the workflow does, so the log and exit
+   code land where the compare script reads them:
+   ```bash
+   uv sync --extra pdf
+   uv run --with pytest --with pytest-timeout --with pytest-asyncio \
+     --with pytest-httpserver python -m pytest tests -q \
+     -p no:cacheprovider --continue-on-collection-errors \
+     > pytest_output.txt 2>&1
+   echo "$?" > pytest_exit_code.txt
+   ```
+4. Compare against the baseline: `python3 scripts/compare_test_baseline.py`.
+   A new line is a real regression from the merge. A fixed line means a
+   known failure is fixed upstream. Update `fork_test_baseline.txt` either
+   way.
 5. Push the merge commit: `git push fork feat/source-index-tools`.
