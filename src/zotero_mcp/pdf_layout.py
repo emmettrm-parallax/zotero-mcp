@@ -793,3 +793,198 @@ def _page_regions(doc, page_num: int) -> dict:
         "regions": regions,
         "warnings": warnings,
     }
+
+
+# split_panels: recursive whitespace cuts on a gray render of one box
+PANEL_INK_DROP = 70                 # ink is this many gray levels darker than the background
+PANEL_GUTTER_MIN = 0.012            # a gutter is at least this share of the box side wide
+PANEL_GUTTER_INK = 0.004            # and holds at most this share of ink on each of its lines
+PANEL_MAX_DEPTH = 4                 # most cuts one cell can take
+PANEL_MIN_WIDTH = 0.08              # a cell narrower than this share of the page is dropped
+PANEL_MIN_HEIGHT = 0.05             # a cell shorter than this share of the page is dropped
+PANEL_MASK_WORDS = 12               # a text block of this many words or more is masked
+
+
+def _ink_runs(profile: list[int], limit: float, min_gap: int) -> list[tuple[int, int]]:
+    """
+    First and last index of each run of lines that hold more ink than ``limit``.
+
+    A run ends at a gutter: ``min_gap`` or more lines in a row at or below the
+    limit. A shorter blank stretch stays inside the run.
+    """
+    runs: list[tuple[int, int]] = []
+    start = end = None
+    gap = 0
+    for index, value in enumerate(profile):
+        if value > limit:
+            if start is None:
+                start = index
+            end, gap = index, 0
+        elif start is not None:
+            gap += 1
+            if gap >= min_gap:
+                runs.append((start, end))
+                start, gap = None, 0
+    if start is not None:
+        runs.append((start, end))
+    return runs
+
+
+def _xy_cut(
+    rows: list[bytes],
+    cols: list[bytes],
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    width: int,
+    height: int,
+    depth: int = 0,
+) -> list[tuple[int, int, int, int]]:
+    """
+    Cut the ink mask inside (x0, y0, x1, y1) at its gutters, columns first.
+
+    ``rows`` and ``cols`` hold the mask once as row strips and once as column
+    strips, so a line of ink is one ``bytes.count``. ``width`` and ``height``
+    are the sides of the whole mask. They set the minimum gutter, so a gutter
+    means the same at every depth. Returns the leaf cells, each trimmed to its
+    ink, in cut order.
+    """
+    col_runs = _ink_runs(
+        [cols[c].count(1, y0, y1) for c in range(x0, x1)],
+        max(1, PANEL_GUTTER_INK * (y1 - y0)),
+        max(3, int(PANEL_GUTTER_MIN * width)),
+    )
+    row_runs = _ink_runs(
+        [rows[r].count(1, x0, x1) for r in range(y0, y1)],
+        max(1, PANEL_GUTTER_INK * (x1 - x0)),
+        max(3, int(PANEL_GUTTER_MIN * height)),
+    )
+    if depth >= PANEL_MAX_DEPTH or (len(col_runs) <= 1 and len(row_runs) <= 1):
+        if not (col_runs and row_runs):
+            return []
+        return [(
+            x0 + col_runs[0][0],
+            y0 + row_runs[0][0],
+            x0 + col_runs[-1][1] + 1,
+            y0 + row_runs[-1][1] + 1,
+        )]
+    cells: list[tuple[int, int, int, int]] = []
+    if len(col_runs) > 1:
+        for first, last in col_runs:
+            cells += _xy_cut(rows, cols, x0 + first, y0, x0 + last + 1, y1, width, height, depth + 1)
+    else:
+        for first, last in row_runs:
+            cells += _xy_cut(rows, cols, x0, y0 + first, x1, y0 + last + 1, width, height, depth + 1)
+    return cells
+
+
+def _reading_order(cells: list[list[float]]) -> list[list[float]]:
+    """
+    Sort [x, y, w, h] cells top to bottom, then left to right.
+
+    A cell joins a row when it overlaps the row's first cell vertically by at
+    least half of the shorter height. A few pixels of trim then cannot swap
+    two panels that sit side by side.
+    """
+    rows: list[list[list[float]]] = []
+    for cell in sorted(cells, key=lambda c: (c[1], c[0])):
+        for row in rows:
+            top, bottom = row[0][1], row[0][1] + row[0][3]
+            overlap = min(bottom, cell[1] + cell[3]) - max(top, cell[1])
+            if overlap >= 0.5 * min(bottom - top, cell[3]):
+                row.append(cell)
+                break
+        else:
+            rows.append([cell])
+    return [cell for row in rows for cell in sorted(row, key=lambda c: c[0])]
+
+
+def split_panels(page, bbox, *, mask_text: bool = False, scale: float = 1.5) -> list[list[float]]:
+    """
+    Plot panels inside one box of a page, found by recursive whitespace cuts.
+
+    bbox and the result are [x, y, w, h], normalized 0-1, top-left origin (the
+    frame of detect_page_regions and of `read --rect`). mask_text paints white
+    each text block of PANEL_MASK_WORDS words or more, and each figure or table
+    caption block, before the cut. The result is in reading order (top to
+    bottom, then left to right). Each box is at least PANEL_MIN_WIDTH of the
+    page wide and PANEL_MIN_HEIGHT of the page high. A box with no such cell,
+    or a degenerate bbox, gives [].
+
+    The clip renders in gray at ``scale``. The background is the median gray.
+    Ink is any pixel PANEL_INK_DROP levels darker. Columns are cut first, then
+    rows, to a depth of PANEL_MAX_DEPTH. Each leaf is trimmed to its ink.
+
+    Args:
+        page: An open PyMuPDF page
+        bbox: [x, y, w, h] of the box to split
+        mask_text: Paint prose and caption blocks white before the cut
+        scale: Render scale. One unit is one PDF point per pixel.
+
+    Returns:
+        A list of [x, y, w, h] boxes rounded to 4 places.
+    """
+    import statistics
+
+    import pymupdf
+
+    try:
+        left, top, width, height = (float(v) for v in bbox)
+    except (TypeError, ValueError):
+        return []
+    page_w, page_h = page.rect.width, page.rect.height
+    if page_w <= 0 or page_h <= 0 or not scale > 0:
+        return []
+    x0, y0 = min(max(left, 0.0), 1.0), min(max(top, 0.0), 1.0)
+    x1, y1 = min(max(left + width, 0.0), 1.0), min(max(top + height, 0.0), 1.0)
+    if not (x1 > x0 and y1 > y0):
+        return []
+    clip = pymupdf.Rect(x0 * page_w, y0 * page_h, x1 * page_w, y1 * page_h)
+    pix = page.get_pixmap(
+        matrix=pymupdf.Matrix(scale, scale),
+        clip=clip,
+        colorspace=pymupdf.csGRAY,
+        alpha=False,
+    )
+    if pix.width < 3 or pix.height < 3:
+        return []
+
+    if mask_text:
+        for block in page.get_text("blocks"):
+            if block[6] != 0:
+                continue
+            if len(block[4].split()) < PANEL_MASK_WORDS and not _parse_caption_block(block[4]):
+                continue
+            # Block boxes use the unrotated page. The render and the result use page.rect.
+            text_box = pymupdf.Rect(block[:4]) * page.rotation_matrix
+            area = pymupdf.IRect(
+                int(text_box.x0 * scale) - 1,
+                int(text_box.y0 * scale) - 1,
+                int(text_box.x1 * scale) + 1,
+                int(text_box.y1 * scale) + 1,
+            ) & pix.irect
+            if not area.is_empty:
+                pix.set_rect(area, (255,))
+
+    samples = pix.samples
+    background = statistics.median(samples[::97])
+    limit = background - PANEL_INK_DROP
+    mask = samples.translate(bytes(1 if gray < limit else 0 for gray in range(256)))
+    stride, mask_w, mask_h = pix.stride, pix.width, pix.height
+    rows = [mask[r * stride:r * stride + mask_w] for r in range(mask_h)]
+    cols = [mask[c::stride] for c in range(mask_w)]
+
+    boxes = []
+    for cx0, cy0, cx1, cy1 in _xy_cut(rows, cols, 0, 0, mask_w, mask_h, mask_w, mask_h):
+        # Pixel to page fraction. The pixmap starts at (pix.x, pix.y) in render space.
+        box_x = (pix.x + cx0) / scale / page_w
+        box_y = (pix.y + cy0) / scale / page_h
+        box_w = (cx1 - cx0) / scale / page_w
+        box_h = (cy1 - cy0) / scale / page_h
+        if box_w < PANEL_MIN_WIDTH or box_h < PANEL_MIN_HEIGHT:
+            continue
+        box_x, box_y = max(box_x, 0.0), max(box_y, 0.0)
+        box_w, box_h = min(box_w, 1.0 - box_x), min(box_h, 1.0 - box_y)
+        boxes.append([box_x, box_y, box_w, box_h])
+    return [[round(v, 4) for v in box] for box in _reading_order(boxes)]
