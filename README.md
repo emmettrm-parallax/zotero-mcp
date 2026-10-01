@@ -120,6 +120,49 @@ Use the MCP server when your client speaks MCP but has no shell (Claude Desktop,
 
 Website: [stevenyuyy.com/zotero-mcp](https://stevenyuyy.com/zotero-mcp/) · [Changelog](https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md)
 
+## Install this fork for a teammate
+
+This checklist takes about 15 minutes. It installs `zotero-cli` and
+`zotero-mcp` from this fork for a teammate. The teammate then points it
+at their own local Zotero library.
+
+1. Install the fork in editable mode, with the `pdf` extra for PDF
+   outlines and page layout:
+
+   ```bash
+   uv tool install --editable "/path/to/zotero-mcp[pdf]"
+   ```
+
+2. Run the setup wizard, or write the config file by hand at
+   `~/.config/zotero-mcp/config.json`:
+
+   ```bash
+   zotero-mcp setup
+   ```
+
+3. In Zotero desktop, open **Settings → Advanced** and tick *Allow other
+   applications on this computer to communicate with Zotero*. This turns
+   on the local API the fork reads and writes through.
+
+4. Get a write key. Run `zotero-mcp authorize-local` and choose **Always
+   Allow** in the Zotero dialog that appears.
+
+5. Confirm the setup with the three checks from `HANDOFF.md` section 3:
+
+   ```bash
+   zotero-cli --json config
+   zotero-cli --json search "component/seal" --mode tag --limit 5 --detail keys_only
+   zotero-mcp authorize-local --status
+   ```
+
+   The first two commands need a real tag from that library. Expect
+   `ok: true` and `Write mode: local` from the third.
+
+6. Install the Meridian skills. They live in the Meridian-Network repo
+   at `.claude/skills/source-index/` and `.claude/skills/zotero-research/`.
+   Copy or symlink that directory into their own `.claude/skills/`
+   folder so an agent can find them.
+
 ## 🤝 Contributing
 
 Issues and pull requests are welcome. Run the tests with `uv run pytest tests/`. A live integration test plan, meant to be run by Claude against a real library, is in [docs/integration-test-plan.md](https://github.com/54yyyu/zotero-mcp/blob/main/docs/integration-test-plan.md).
