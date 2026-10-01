@@ -129,12 +129,12 @@ for the output contract.
 ## `grep`
 
  - `<key>` -- Item key or PDF attachment key
- - `<terms>` -- Terms to find; each is counted on its own
+ - `<terms>` -- Terms to find. Each is counted on its own
  - `--regex` -- Treat each TERM as a regex
  - `--word` -- Match whole words only
  - `--pages` -- default `all` -- Pages to search: all (default), 3, 3-6, or 1,4,6-9
  - `--context` -- default `300` -- Characters of context on each side of a match
- - `--max-hits` -- default `200` -- Cap on snippets returned; counts always cover every hit
+ - `--max-hits` -- default `200` -- Cap on snippets returned. Counts always cover every hit
  - `--order` -- one of `page`, `score` -- default `page` -- Order pages by number, or by hit density
  - `--no-cache` -- Do not use the page-text cache
  - `--jobs` -- Worker processes for text extraction
@@ -145,21 +145,21 @@ for the output contract.
  - `<key>` -- Item key or PDF attachment key
  - `--pages` -- default `all` -- Pages to cover: all (default), 3, 3-6, or 1,4,6-9
  - `--max-level` -- default `2` -- Deepest outline level that starts a section
- - `--chunk-pages` -- default `8` -- Longest section in pages; also the chunk size with no outline
+ - `--chunk-pages` -- default `8` -- Longest section in pages. Also the chunk size with no outline
  - `--inventory` -- List the tables, figures and equations in each section
 
 ## `tables`
 
  - `<key>` -- Item key or PDF attachment key
  - `--pages` -- **required** -- Pages to read: all, 3, 3-6, or 1,4,6-9
- - `--strategy` -- one of `lines`, `text` -- default `lines` -- lines finds ruled tables; text finds tables under a 'Table N' caption that have no ruled cells
+ - `--strategy` -- one of `lines`, `text` -- default `lines` -- lines finds ruled tables. text finds tables under a 'Table N' caption that have no ruled cells
 
 ## `index`
 
 ### `index push`
 
  - `<key>` -- Item key or PDF attachment key
- - `--from` -- **required** -- Index JSON file; - reads stdin
+ - `--from` -- **required** -- Index JSON file. Use - to read stdin
  - `--replace` -- Replace the item's existing index instead of failing
  - `--tags` -- Comma-separated tags to add to the parent item
  - `--dry-run` -- Report what would be written, without writing
