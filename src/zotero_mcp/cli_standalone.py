@@ -1830,7 +1830,8 @@ def build_parser() -> argparse.ArgumentParser:
     sc_p.add_argument("--chunk-pages", type=int, default=8,
                       help="Longest section in pages. Also the chunk size with no outline")
     sc_p.add_argument("--inventory", action="store_true",
-                      help="List the tables, figures and equations in each section")
+                      help="List the tables, figures and equations in each section, "
+                           "and the plot count of each page")
 
     tb_p = sub.add_parser("tables", help="Read the cells of the tables on PDF pages")
     tb_p.add_argument("key", help="Item key or PDF attachment key")
@@ -2228,7 +2229,8 @@ Commands returning structured data
   config                data.settings
   grep                  data.counts{}, data.total_hits, data.pages[] -- per-page
                         hits and snippets, each match marked [[ ]]
-  sections              data.sections[], data.source, data.scope
+  sections              data.sections[], data.source, data.scope, with --inventory
+                        also data.inventory[] -- each row has plots_on_page[]
   tables                data.pages[].tables[] -- header, rows, caption, rect_arg
   index push            data.note_keys, data.parts, data.counts
   index show            data.index -- the parsed index, or one section of it
