@@ -115,9 +115,15 @@ def show(key, *, section=None, pages=None, grep=None, regex: bool = False, expan
     return {**data, "index": index, "filter": _filter_with_section(report, section)}
 
 
-def search(terms, *, items=None, tag="status/indexed", fields="lead", expand: bool = False,
-          limit=10, max_items=10, regex: bool = False, ctx) -> dict:
-    """`index search`: the terms in the index of each item of the set, most facts first."""
+def search(terms, *, items=None, tag="status/indexed,status/index-failed-gate", fields="lead",
+          expand: bool = False, limit=10, max_items=10, regex: bool = False, ctx) -> dict:
+    """`index search`: the terms in the index of each item of the set, most facts first.
+
+    `tag` takes a single tag or a comma-separated list. Each listed tag resolves its own
+    item set, and the union of the keys goes to search, in first-seen order. The default
+    searches both `status/indexed` and `status/index-failed-gate`: an index that failed
+    the audit gate still holds facts worth recall.
+    """
     from zotero_mcp import index_grep, pdf_source, source_index
 
     parsed_terms = _terms(terms, regex=regex)
@@ -127,7 +133,10 @@ def search(terms, *, items=None, tag="status/indexed", fields="lead", expand: bo
         tag = None
     else:
         requested = None
-        keys = list(dict.fromkeys(source_index.list_items_with_tag(tag)))
+        tags = [part.strip() for part in str(tag).split(",") if part.strip()]
+        keys = list(dict.fromkeys(
+            key for one_tag in tags for key in source_index.list_items_with_tag(one_tag)
+        ))
     indexes = source_index.show_indexes(keys, ctx=ctx) if keys else {}
 
     hits, no_hits, skipped = [], [], []

@@ -179,7 +179,7 @@ for the output contract.
 
  - `<terms>` -- Terms to find. Each value splits on commas, so quote a term that has spaces.
  - `--items` -- Item or PDF attachment keys to search, instead of every item with --tag
- - `--tag` -- default `status/indexed` -- Search every item that has this tag (ignored with --items)
+ - `--tag` -- default `status/indexed,status/index-failed-gate` -- Search every item that has this tag, or a comma-separated list of tags (ignored with --items). An index that failed the audit gate still holds facts, so recall searches both tags by default.
  - `--fields` -- one of `lead`, `full` -- default `lead` -- lead keeps a few short fields per entry, full the whole record
  - `--expand` -- Also match the variants and symbols of the vocabulary entries that match a TERM
  - `--limit` -- default `10` -- Most entries of each kind to return for each item. 0 means no cap.

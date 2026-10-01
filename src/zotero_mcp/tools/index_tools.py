@@ -118,7 +118,10 @@ def index_show(
         "terms: one or more terms (any term matches). "
         "items: comma-separated item or PDF attachment keys to search, in place of "
         "every item carrying tag. "
-        "tag: default 'status/indexed'. Ignored when items is given. "
+        "tag: one tag, or a comma-separated list of tags, default "
+        "'status/indexed,status/index-failed-gate'. An index that failed the audit "
+        "gate still holds facts, so recall searches both tags by default. Ignored "
+        "when items is given. "
         "fields: 'lead' (default, a few short fields per entry) or 'full'. "
         "expand: also match vocabulary variants and symbols. "
         "regex: treat each term as one regular expression. "
@@ -134,7 +137,7 @@ def index_show(
 def index_search(
     terms: list[str] | str,
     items: str | None = None,
-    tag: str = "status/indexed",
+    tag: str = "status/indexed,status/index-failed-gate",
     fields: str = "lead",
     expand: bool = False,
     regex: bool = False,

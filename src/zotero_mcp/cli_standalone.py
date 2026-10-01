@@ -1873,8 +1873,10 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Terms to find. Each value splits on commas, so quote a term that has spaces.")
     ixq.add_argument("--items", metavar="K,K",
                      help="Item or PDF attachment keys to search, instead of every item with --tag")
-    ixq.add_argument("--tag", default="status/indexed",
-                     help="Search every item that has this tag (ignored with --items)")
+    ixq.add_argument("--tag", default="status/indexed,status/index-failed-gate",
+                     help="Search every item that has this tag, or a comma-separated list of "
+                          "tags (ignored with --items). An index that failed the audit gate "
+                          "still holds facts, so recall searches both tags by default.")
     ixq.add_argument("--fields", choices=["lead", "full"], default="lead",
                      help="lead keeps a few short fields per entry, full the whole record")
     ixq.add_argument("--expand", action="store_true",

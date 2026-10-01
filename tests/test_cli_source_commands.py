@@ -439,7 +439,8 @@ class TestIndexFilterParsers:
     def test_search_defaults(self):
         args = build_parser().parse_args(["index", "search", "leakage"])
         assert (args.command, args.subcommand, args.terms) == ("index", "search", ["leakage"])
-        assert (args.items, args.tag, args.fields) == (None, "status/indexed", "lead")
+        assert (args.items, args.tag, args.fields) == \
+            (None, "status/indexed,status/index-failed-gate", "lead")
         assert (args.expand, args.regex, args.limit, args.max_items) == (False, False, 10, 10)
 
     def test_search_flags_parse(self):
@@ -1191,23 +1192,58 @@ def _search(monkeypatch, capsys, *argv):
 
 
 class TestIndexSearch:
-    def test_the_default_item_set_is_the_status_indexed_tag(self, fakes, monkeypatch, capsys):
+    def test_the_default_item_set_is_both_status_tags(self, fakes, monkeypatch, capsys):
         _stage(fakes, DDDD0001={"facts": 1}, AAAA0001={"facts": 2})
         code, body = _search(monkeypatch, capsys, "leakage")
         assert (code, body["ok"], body["command"]) == (0, True, "index search")
-        assert [tag for tag, _kw in fakes.tag_calls] == ["status/indexed"]
+        assert [tag for tag, _kw in fakes.tag_calls] == \
+            ["status/indexed", "status/index-failed-gate"]
         [(keys, ctx)] = fakes.show_indexes
         assert keys == ["DDDD0001", "AAAA0001"] and ctx is not None
         assert fakes.parent_keys == []
         data = body["data"]
         assert (data["tag"], data["items_requested"], data["searched"]) == \
-            ("status/indexed", None, 2)
+            ("status/indexed,status/index-failed-gate", None, 2)
 
     def test_a_tag_flag_replaces_the_default(self, fakes, monkeypatch, capsys):
         _stage(fakes, AAAA0001={"facts": 1})
         _code, body = _search(monkeypatch, capsys, "leakage", "--tag", "status/checked")
         assert [tag for tag, _kw in fakes.tag_calls] == ["status/checked"]
         assert body["data"]["tag"] == "status/checked"
+
+    def test_a_comma_separated_tag_list_is_the_union_in_first_seen_order(self, fakes, monkeypatch,
+                                                                         capsys):
+        fakes.search_indexes = {"AAAA0001": indexed("AAAA0001", facts=1),
+                                "BBBB0001": indexed("BBBB0001", facts=1),
+                                "CCCC0001": indexed("CCCC0001", facts=1)}
+        tagged_by_tag = {"status/checked": ["AAAA0001", "BBBB0001"],
+                         "status/flagged": ["BBBB0001", "CCCC0001"]}
+
+        def list_items_with_tag(tag, **kwargs):
+            fakes.tag_calls.append((tag, kwargs))
+            return list(tagged_by_tag.get(tag, []))
+
+        monkeypatch.setattr(sys.modules["zotero_mcp.source_index"], "list_items_with_tag",
+                            list_items_with_tag)
+        _code, body = _search(monkeypatch, capsys, "leakage", "--tag",
+                              "status/checked,status/flagged")
+        assert [tag for tag, _kw in fakes.tag_calls] == ["status/checked", "status/flagged"]
+        # BBBB0001 comes from both tags; the union keeps it once, where it first appeared.
+        assert fakes.show_indexes[0][0] == ["AAAA0001", "BBBB0001", "CCCC0001"]
+        assert body["data"]["searched"] == 3
+        assert body["data"]["tag"] == "status/checked,status/flagged"
+
+    def test_a_single_tag_with_no_comma_still_works(self, fakes, monkeypatch, capsys):
+        _stage(fakes, AAAA0001={"facts": 1})
+        _code, body = _search(monkeypatch, capsys, "leakage", "--tag", "status/checked")
+        assert [tag for tag, _kw in fakes.tag_calls] == ["status/checked"]
+        assert body["data"]["searched"] == 1
+
+    def test_blank_parts_of_a_tag_list_are_ignored(self, fakes, monkeypatch, capsys):
+        _stage(fakes, AAAA0001={"facts": 1})
+        _code, body = _search(monkeypatch, capsys, "leakage", "--tag", "status/checked, ,")
+        assert [tag for tag, _kw in fakes.tag_calls] == ["status/checked"]
+        assert body["data"]["tag"] == "status/checked, ,"
 
     def test_items_replace_the_tag_and_go_through_parent_key(self, fakes, monkeypatch, capsys):
         fakes.parent_map = {"ATTACH01": "AAAA0001", "BBBB0001": "BBBB0001"}
