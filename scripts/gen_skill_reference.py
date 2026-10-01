@@ -33,8 +33,9 @@ Every command also accepts `--json` (machine-readable envelope on stdout) and
 each first-level command, so they may precede the command name or follow it,
 but not follow a sub-command: `get --json metadata KEY` parses and
 `get metadata --json KEY` does not. The exceptions are `index push`,
-`index show` and `index search`, which also take `--json` after the
-sub-command. Run `zotero-cli --json-schema` for the output contract.
+`index show`, `index search`, `index cards` and `index cards push`, which
+also take `--json` after the sub-command. Run `zotero-cli --json-schema`
+for the output contract.
 
 """
 
