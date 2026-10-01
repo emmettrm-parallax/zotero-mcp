@@ -10,7 +10,7 @@ Read this first in a new Claude Code session. Then run the three checks in secti
 | MCP server + CLI package | editable uv tool from `~/Github/zotero-mcp` (fork of 54yyyu/zotero-mcp 0.13.1) | installed, executables `zotero-mcp`, `zotero-cli` in `~/.local/bin` |
 | MCP entry | `~/.claude.json`, server name `zotero`, `ZOTERO_LOCAL=true`, `ZOTERO_MCP_TOOLSETS=none` | registered, 35 tools, loads on session restart |
 | Generic CLI skill | `~/.claude/skills/zotero-cli/` | installed by `zotero-mcp install-skill` |
-| Meridian skill | `Meridian-Network/.claude/skills/zotero-research/SKILL.md` | written, untracked on `main`, contract test passes |
+| Zotero skills | `~/.claude/skills/source-index`, `~/.claude/skills/zotero-research` | moved to github.com/emmettrm-parallax/zotero-skills on 2026-10-01, installed by symlink |
 | Write key | Zotero profile `localAPIKeys.json` and `~/.config/zotero-mcp/config.json` | saved, reusable, no dialog |
 | Library tags | 22 items, 109 tags, 74 in the controlled vocabulary | applied and verified |
 | Tag plan and apply script | `~/Github/zotero-mcp/scripts/meridian_tag_plan_2026-09-28.json`, `scripts/apply_tag_plan.py` | done, kept for reuse |

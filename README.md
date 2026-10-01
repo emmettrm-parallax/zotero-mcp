@@ -158,10 +158,15 @@ at their own local Zotero library.
    The first two commands need a real tag from that library. Expect
    `ok: true` and `Write mode: local` from the third.
 
-6. Install the Meridian skills. They live in the Meridian-Network repo
-   at `.claude/skills/source-index/` and `.claude/skills/zotero-research/`.
-   Copy or symlink that directory into their own `.claude/skills/`
-   folder so an agent can find them.
+6. Install the Meridian skills. They live in the private repo
+   github.com/emmettrm-parallax/zotero-skills. Clone the repo. Then link
+   each skill folder into `~/.claude/skills/` so an agent can find it:
+
+   ```bash
+   git clone https://github.com/emmettrm-parallax/zotero-skills ~/Github/zotero-skills
+   ln -s ~/Github/zotero-skills/skills/source-index ~/.claude/skills/
+   ln -s ~/Github/zotero-skills/skills/zotero-research ~/.claude/skills/
+   ```
 
 ## 🤝 Contributing
 
