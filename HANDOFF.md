@@ -64,3 +64,14 @@ New: `index search` reads every indexed item. Example: `zotero-cli --json index 
 New error code: `bad_grep`. It means an empty term list, or `--expand` or `--regex` without `--grep`.
 Remove the worktrees `r3f1` to `r3f3` under `~/Github/zotero-mcp-wt/` after the branch merges.
 Recall study of 2026-09-30, 12 questions, one Sonnet run per cell: the old skill, the filtered calls and the new skill each answered 12 of 12. In the old condition the agents wrote the full index to a file and filtered it. It never reached the context. The filters protect a client with no shell. Next: give the MCP index tool a lead-only default, and give `read` and `grep` a plain-text output.
+
+## 8. Added 2026-10-01: round 4
+
+Branch `feat/source-index-tools` holds the round-4 merges at 39f12d5. Suite: 4432 passed, 0 failed.
+New MCP tools in the toolset `source-index`: `zotero_index_show` and `zotero_index_search`, lead-only by default, cap 80. A bare show returns `bad_grep`.
+New flags: `read --text` and `grep --text` print plain text. `index search --tag` takes a comma list. Its default is `status/indexed,status/index-failed-gate`, because an index that failed the audit gate still holds facts.
+New commands: `index cards [--grep T,T] [--expand]` lists the source cards, `index cards push KEY --from FILE` writes one. Schema `source-card/v1`, error `invalid_card`. 21 items carry a card.
+Fork upkeep: `.github/workflows/tests.yml` runs the suite on Python 3.11 with the `pdf` extra. `scripts/compare_test_baseline.py` compares the failed test ids with `fork_test_baseline.txt` and fails the job only on a new id. `UPSTREAM.md` pins the upstream base and gives the rebase routine. The README has a teammate install section. The first GitHub run on 2026-10-01 passed: 3821 passed on Linux, 35 known failed or error ids, 0 new.
+Semantic store: the tool venv holds chromadb, sentence-transformers and torch. The config uses the `qwen` model with passage chunks. The store at `~/.config/zotero-mcp/chroma_db` holds 2128 passages. The finder trial found no accuracy gain over tags or cards on a 24-item library, so the research skill does not use it.
+Library: 15 items carry an index. The 12 built this round carry `status/index-failed-gate`. Audit numbers, cost and open items: Meridian memory note `source-index-pipeline-built`.
+The worktrees `a0` to `a3`, `f1` to `f3`, `r3f1` to `r3f3` and the `si4-*` set are removed. Only the main checkout remains.
