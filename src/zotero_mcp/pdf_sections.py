@@ -27,6 +27,23 @@ The line pattern also fires on in-text sentence starts such as ``Figure 13-20
 shows ...``. That over-inclusion is deliberate: the list is a hint, and an
 extra label costs a reader one glance where a missing one costs a fact.
 
+Each inventory row also carries ``plots_on_page``, one entry per page of the
+row. An entry is ``{page, plots, source, scanned, panel_rects}``. The count sits
+on the page that holds the graphic. It comes from the page layout boxes, and
+from ``pdf_layout.split_panels`` for a raster box or a scanned page. A reader
+uses it to give a page of many plots its own unit. ``source`` names where the
+count came from:
+
+- ``layout``: one count for each drawing box, each table box on a page with no
+  table label, and each image box that the grid split cannot cut.
+- ``grid``: a grid split gave 2 or more cells, or the scan path ran.
+- ``captions``: no box and no cell, so the figure caption blocks are the count.
+  It is a floor.
+- ``labels``: the layout pass failed, so the figure labels are the count.
+
+``panel_rects`` holds one ``x,y,w,h`` rect for each counted plot, in the format
+of ``--rect``. ``scanned`` is true when one image covers 95 percent of the page.
+
 The outline is read through ``tools.write._extract_pdf_toc``, which runs
 ``get_toc()`` in a throwaway child process: on some PDFs it segfaults (#372),
 and a segfault in this process would take the CLI or the MCP server with it.
@@ -45,6 +62,8 @@ _TABLE_LABEL_RE = re.compile(r"\btab", re.IGNORECASE)
 # A label at the start of a text line: "Figure 13-19 Title", "Fig. 3.1", "Table 2".
 _LINE_LABEL_RE = re.compile(r"^(Figure|Fig\.|Table|Eq\.|Equation)\s+\d+([-.]\d+)?")
 _EQ_NAME_RE = re.compile(r"^(?:Eq\.|Equation)\s+(\d+(?:[-.]\d+)?)$")
+# Layout boxes that can hold a plot. An equation box never does.
+_PLOT_SOURCES = ("drawing", "image", "merged", "table")
 
 
 def sections_for_pdf(
@@ -66,9 +85,9 @@ def sections_for_pdf(
         max_level: Deepest outline level that starts a unit.
         chunk_pages: Longest unit, in pages. Longer units are split; a PDF with
             no usable outline is cut into chunks of this size.
-        inventory: Also list, per unit, the table and figure labels and the
-            display equations found on its pages (a hint list; it can
-            include in-text mentions that start a line).
+        inventory: Also list, per unit, the table and figure labels, the
+            display equations and the plot count of each page. The labels are
+            a hint list. They can include in-text mentions that start a line.
 
     Returns:
         ``{key, attachment_key, title, page_count, source, scope, sections}``
@@ -76,7 +95,7 @@ def sections_for_pdf(
         ``title`` are None here; the caller fills them in. Each section is
         ``{id, title, path, level, start_page, end_page, kind}``. Each
         inventory row is ``{section_id, tables, figures, equations,
-        unnumbered_equations}``.
+        unnumbered_equations, plots_on_page}``.
 
     Raises:
         ValueError: ``max_level`` or ``chunk_pages`` below 1, a page range
@@ -163,14 +182,16 @@ def format_sections_markdown(data: dict) -> str:
             "",
             "## Inventory",
             "",
-            "| Section | Tables | Figures | Equations | Unnumbered equations |",
-            "| --- | --- | --- | --- | --- |",
+            "| Section | Tables | Figures | Equations | Unnumbered equations | Plots |",
+            "| --- | --- | --- | --- | --- | --- |",
         ]
         for row in rows:
+            plots = sum(entry["plots"] for entry in row.get("plots_on_page", []))
             lines.append(
                 f"| {row['section_id']} | {_cell(', '.join(row['tables']) or '-')} "
                 f"| {_cell(', '.join(row['figures']) or '-')} "
-                f"| {_cell(', '.join(row['equations']) or '-')} | {row['unnumbered_equations']} |"
+                f"| {_cell(', '.join(row['equations']) or '-')} | {row['unnumbered_equations']} "
+                f"| {plots} |"
             )
     return "\n".join(lines) + "\n"
 
@@ -310,30 +331,35 @@ def _chunks(first: int, last: int, chunk_pages: int) -> list[dict]:
 def _inventory(doc, sections: list[dict]) -> list[dict]:
     """Per section, the tables, figures and equations its pages carry.
 
-    Pages shared by two sections are listed under both. A page that fails to
-    scan counts as empty rather than failing the whole map.
+    Each row also lists the plot count of each of its pages. Pages shared by
+    two sections are listed under both. A page that fails to scan counts as
+    empty rather than failing the whole map.
     """
-    scanned: dict[int, tuple[list[str], list[str], list[str], int]] = {}
+    scanned: dict[int, tuple[list[str], list[str], list[str], int, dict]] = {}
     rows = []
     for section in sections:
         tables: list[str] = []
         figures: list[str] = []
         equations: list[str] = []
         unnumbered = 0
+        plots_on_page: list[dict] = []
         for page in range(section["start_page"], section["end_page"] + 1):
             if page not in scanned:
                 scanned[page] = _scan_page(doc, page)
-            page_tables, page_figures, page_equations, page_unnumbered = scanned[page]
+            page_tables, page_figures, page_equations, page_unnumbered, page_plots = scanned[page]
             _extend_unique(tables, page_tables, "tables")
             _extend_unique(figures, page_figures, "figures")
             _extend_unique(equations, page_equations, "equations")
             unnumbered += page_unnumbered
+            # A copy, so the two rows of a shared page never share one list.
+            plots_on_page.append({**page_plots, "panel_rects": list(page_plots["panel_rects"])})
         rows.append({
             "section_id": section["id"],
             "tables": tables,
             "figures": figures,
             "equations": equations,
             "unnumbered_equations": unnumbered,
+            "plots_on_page": plots_on_page,
         })
     return rows
 
@@ -380,20 +406,152 @@ def _line_labels(page) -> dict[str, list[str]]:
     return found
 
 
-def _scan_page(doc, page_num: int) -> tuple[list[str], list[str], list[str], int]:
-    """(table labels, figure labels, equation labels, unnumbered equation count).
+def _caption_labels(page) -> dict[str, list[str]]:
+    """Labels of the text blocks that read as captions: ``{tables, figures}``.
 
-    Layout captions and equation labels come first; labels found at the start
+    A label keeps the case it has on the page, so ``FIGURE 10.`` gives
+    ``FIGURE 10``. Each label appears once.
+    """
+    from zotero_mcp.pdf_layout import _parse_caption_block
+
+    found: dict[str, list[str]] = {"tables": [], "figures": []}
+    for block in page.get_text("blocks"):
+        if block[6] != 0:
+            continue
+        parsed = _parse_caption_block(block[4])
+        if parsed:
+            kind = "tables" if parsed["kind"] == "table" else "figures"
+            _extend_unique(found[kind], [parsed["label"]], kind)
+    return found
+
+
+def _rect_arg(box) -> str:
+    """A normalized ``[x, y, w, h]`` box in the format of ``--rect``."""
+    x, y, w, h = box
+    return f"{x:.4f},{y:.4f},{w:.4f},{h:.4f}"
+
+
+def _is_scan(page) -> bool:
+    """True when one image covers at least ``LAYOUT_MAX_REGION_AREA`` of the page."""
+    from zotero_mcp.pdf_layout import LAYOUT_MAX_REGION_AREA
+
+    rect = page.rect
+    page_area = rect.width * rect.height
+    if page_area <= 0:
+        return False
+    for info in page.get_image_info():
+        x0, y0, x1, y1 = info["bbox"]
+        width = min(x1, rect.x1) - max(x0, rect.x0)
+        height = min(y1, rect.y1) - max(y0, rect.y0)
+        if width > 0 and height > 0 and width * height >= LAYOUT_MAX_REGION_AREA * page_area:
+            return True
+    return False
+
+
+def _split_cells(page, bbox, **kwargs) -> list[list[float]] | None:
+    """The plot cells of ``pdf_layout.split_panels``, or None when it cannot run.
+
+    The function may be absent, and it may raise. In both cases the caller
+    counts the box as one plot.
+    """
+    from zotero_mcp import pdf_layout
+
+    split = getattr(pdf_layout, "split_panels", None)
+    if split is None:
+        return None
+    try:
+        cells = split(page, bbox, **kwargs)
+    except Exception:
+        logger.debug("split_panels failed on %s", bbox, exc_info=True)
+        return None
+    return [list(cell) for cell in cells or []]
+
+
+def _page_plots(
+    page,
+    page_num: int,
+    regions: list[dict],
+    *,
+    layout_failed: bool,
+    has_table_label: bool,
+    figure_labels: list[str],
+    caption_figures: list[str],
+) -> dict:
+    """The ``plots_on_page`` entry of one page.
+
+    Counting rules, in order:
+
+    - A failed layout pass gives the figure label count.
+    - Each drawing box counts 1. A table box counts 1 only when the page has no
+      table label, since a plot can read as a table.
+    - Each image or merged box counts its grid cells, or 1 when the split gives
+      fewer than 2 cells or cannot run.
+    - Equation boxes never count.
+    - A scanned page with no box is split whole, with its text masked.
+    - When nothing was found, the figure caption blocks are the count.
+    """
+    entry = {"page": page_num, "plots": 0, "source": "layout", "scanned": False, "panel_rects": []}
+    try:
+        entry["scanned"] = _is_scan(page)
+    except Exception:
+        pass
+    if layout_failed:
+        entry.update(plots=len(figure_labels), source="labels")
+        return entry
+
+    boxes = [region for region in regions if region.get("source") in _PLOT_SOURCES]
+    plots = 0
+    rects: list[str] = []
+    grid = False
+    for region in boxes:
+        bbox = region["bbox"]
+        if region["source"] == "drawing" or (region["source"] == "table" and not has_table_label):
+            plots += 1
+            rects.append(_rect_arg(bbox))
+        elif region["source"] != "table":
+            cells = _split_cells(page, bbox) or []
+            if len(cells) >= 2:
+                grid = True
+                plots += len(cells)
+                rects.extend(_rect_arg(cell) for cell in cells)
+            else:
+                plots += 1
+                rects.append(_rect_arg(bbox))
+
+    if entry["scanned"] and not boxes:
+        cells = _split_cells(page, [0, 0, 1, 1], mask_text=True)
+        if cells is not None:
+            grid = True
+            plots += len(cells)
+            rects.extend(_rect_arg(cell) for cell in cells)
+
+    if plots == 0 and caption_figures:
+        entry.update(plots=len(caption_figures), source="captions")
+        return entry
+    entry.update(plots=plots, source="grid" if grid else "layout", panel_rects=rects)
+    return entry
+
+
+def _scan_page(doc, page_num: int) -> tuple[list[str], list[str], list[str], int, dict]:
+    """(table labels, figure labels, equation labels, unnumbered equation count, plot entry).
+
+    Layout captions and equation labels come first. Labels found at the start
     of a text line are added when the layout pass did not already list them.
+    Caption blocks come last, so a caption set in capitals (``FIGURE 10.``)
+    lists on its own page. The plot entry is described in ``_page_plots``.
     """
     from zotero_mcp.pdf_layout import detect_page_regions, scan_math
 
     tables: list[str] = []
     figures: list[str] = []
+    layout_failed = False
     try:
-        regions = detect_page_regions(doc, page_num).get("regions", [])
+        outcome = detect_page_regions(doc, page_num)
+        regions = outcome.get("regions", [])
+        layout_failed = "error" in outcome
     except Exception:
         regions = []
+        layout_failed = True
     for region in regions:
         label = region.get("caption_label")
         # Display equations come from scan_math below, with their own labels.
@@ -418,4 +576,21 @@ def _scan_page(doc, page_num: int) -> tuple[list[str], list[str], list[str], int
     _extend_unique(tables, by_line["tables"], "tables")
     _extend_unique(figures, by_line["figures"], "figures")
     _extend_unique(labels, by_line["equations"], "equations")
-    return tables, figures, labels, unnumbered
+
+    try:
+        by_caption = _caption_labels(doc[page_num - 1])
+    except Exception:
+        by_caption = {"tables": [], "figures": []}
+    _extend_unique(tables, by_caption["tables"], "tables")
+    _extend_unique(figures, by_caption["figures"], "figures")
+
+    try:
+        page = doc[page_num - 1]
+        plots = _page_plots(
+            page, page_num, regions,
+            layout_failed=layout_failed, has_table_label=bool(tables),
+            figure_labels=figures, caption_figures=by_caption["figures"],
+        )
+    except Exception:
+        plots = {"page": page_num, "plots": 0, "source": "labels", "scanned": False, "panel_rects": []}
+    return tables, figures, labels, unnumbered, plots

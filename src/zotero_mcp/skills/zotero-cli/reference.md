@@ -146,7 +146,7 @@ for the output contract.
  - `--pages` -- default `all` -- Pages to cover: all (default), 3, 3-6, or 1,4,6-9
  - `--max-level` -- default `2` -- Deepest outline level that starts a section
  - `--chunk-pages` -- default `8` -- Longest section in pages. Also the chunk size with no outline
- - `--inventory` -- List the tables, figures and equations in each section
+ - `--inventory` -- List the tables, figures and equations in each section, and the plot count of each page
 
 ## `tables`
 

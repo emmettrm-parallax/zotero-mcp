@@ -1,4 +1,4 @@
-"""Section maps of synthetic PDFs: outline units, clipping, splitting, chunks, inventory."""
+"""Section maps of synthetic PDFs: outline units, clipping, splitting, chunks, inventory, plot counts."""
 
 from __future__ import annotations
 
@@ -401,11 +401,12 @@ def add_math_page(doc):
     return page
 
 
-def add_table_page(doc):
-    """A page with a ruled 3-row table under a "Table 1" caption line."""
+def add_table_page(doc, caption=True):
+    """A page with a ruled 3-row table, under a "Table 1" caption line unless ``caption`` is off."""
     page = doc.new_page(width=612, height=792)
     page.insert_text((72, 72), "Table page", fontsize=12)
-    page.insert_text((72, 150), "Table 1: Measured pressure ratios.", fontsize=10)
+    if caption:
+        page.insert_text((72, 150), "Table 1: Measured pressure ratios.", fontsize=10)
     for row in range(4):
         y = 170 + row * 20
         page.draw_line((72, y), (400, y), width=0.8)
@@ -424,6 +425,36 @@ def add_figure_page(doc):
     pixmap.clear_with(180)
     page.insert_image(pymupdf.Rect(72, 100, 312, 240), pixmap=pixmap)
     page.insert_text((72, 260), "Figure 2: Test rig layout.", fontsize=10)
+    return page
+
+
+def add_drawings_page(doc):
+    """A page with two vector plot frames far apart and no caption."""
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "Plot page", fontsize=12)
+    for top in (100, 400):
+        page.draw_rect(pymupdf.Rect(100, top, 400, top + 200), width=1)
+        page.draw_line((100, top + 100), (400, top + 100), width=1)
+        page.draw_line((250, top), (250, top + 200), width=1)
+    return page
+
+
+def add_scan_page(doc, text="FIGURE 3. TEST CAPTION", coverage=1.0):
+    """A page of one image, ``coverage`` of the page tall, with a text layer line below it."""
+    page = doc.new_page(width=612, height=792)
+    pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 306, 396))
+    pixmap.clear_with(240)
+    page.insert_image(pymupdf.Rect(0, 0, 612, 792 * coverage), pixmap=pixmap, keep_proportion=False)
+    if text:
+        page.insert_text((72, 770), text, fontsize=10)
+    return page
+
+
+def add_text_page(doc, *lines):
+    """A page of text lines, 100 points apart, with no graphic."""
+    page = doc.new_page(width=612, height=792)
+    for number, line in enumerate(lines):
+        page.insert_text((72, 100 + 100 * number), line, fontsize=10)
     return page
 
 
@@ -469,6 +500,40 @@ def inventory_pdf(tmp_path):
     return path
 
 
+# The figure page's image, as the layout detector boxes it, in the format of ``--rect``.
+FIGURE_RECT = "0.1176,0.1263,0.3922,0.1768"
+FOUR_CELLS = [[0.10, 0.10, 0.20, 0.10], [0.40, 0.10, 0.20, 0.10],
+              [0.10, 0.30, 0.20, 0.10], [0.40, 0.30, 0.20, 0.10]]
+
+
+def plot_entry(page, plots=0, source="layout", scanned=False, panel_rects=()):
+    return {"page": page, "plots": plots, "source": source, "scanned": scanned,
+            "panel_rects": list(panel_rects)}
+
+
+class FakeSplit:
+    """Stands in for ``pdf_layout.split_panels``: gives ``cells`` and records each call."""
+
+    def __init__(self, cells):
+        self.cells = cells
+        self.calls = []
+
+    def __call__(self, page, bbox, **kwargs):
+        self.calls.append((list(bbox), kwargs))
+        return [list(cell) for cell in self.cells]
+
+
+@pytest.fixture
+def no_split(monkeypatch):
+    """A grid split that finds nothing, so a test never depends on the real one."""
+    from zotero_mcp import pdf_layout
+
+    fake = FakeSplit([])
+    monkeypatch.setattr(pdf_layout, "split_panels", fake, raising=False)
+    return fake
+
+
+@pytest.mark.usefixtures("no_split")
 class TestInventory:
     def test_lists_table_caption_equation_label_and_unnumbered_count(self, inventory_pdf):
         """One page per unit (page chunks), so each row holds one page's labels."""
@@ -476,13 +541,14 @@ class TestInventory:
 
         assert result["source"] == "chunks"
         assert result["inventory"] == [
-            {"section_id": "S01", "tables": [], "figures": [], "equations": [], "unnumbered_equations": 0},
+            {"section_id": "S01", "tables": [], "figures": [], "equations": [], "unnumbered_equations": 0,
+             "plots_on_page": [plot_entry(1)]},
             {"section_id": "S02", "tables": ["Table 1"], "figures": [], "equations": [],
-             "unnumbered_equations": 0},
+             "unnumbered_equations": 0, "plots_on_page": [plot_entry(2)]},
             {"section_id": "S03", "tables": [], "figures": [], "equations": ["(3)"],
-             "unnumbered_equations": 1},
+             "unnumbered_equations": 1, "plots_on_page": [plot_entry(3)]},
             {"section_id": "S04", "tables": [], "figures": ["Figure 2"], "equations": [],
-             "unnumbered_equations": 0},
+             "unnumbered_equations": 0, "plots_on_page": [plot_entry(4, 1, panel_rects=[FIGURE_RECT])]},
         ]
 
     def test_a_section_over_several_pages_pools_their_labels(self, inventory_pdf, tmp_path):
@@ -494,6 +560,8 @@ class TestInventory:
         assert result["inventory"] == [{
             "section_id": "S01", "tables": ["Table 1"], "figures": ["Figure 2"],
             "equations": ["(3)"], "unnumbered_equations": 1,
+            "plots_on_page": [plot_entry(1), plot_entry(2), plot_entry(3),
+                              plot_entry(4, 1, panel_rects=[FIGURE_RECT])],
         }]
 
     def test_a_page_shared_by_two_sections_is_listed_under_both(self, inventory_pdf, tmp_path):
@@ -548,11 +616,13 @@ class TestInventory:
         monkeypatch.setattr(pdf_layout, "detect_page_regions", boom)
         monkeypatch.setattr(pdf_layout, "scan_math", boom)
         monkeypatch.setattr(pdf_sections, "_line_labels", boom)
+        monkeypatch.setattr(pdf_sections, "_caption_labels", boom)
 
         result = pdf_sections.sections_for_pdf(inventory_pdf, inventory=True)
 
         assert result["inventory"] == [
-            {"section_id": "S01", "tables": [], "figures": [], "equations": [], "unnumbered_equations": 0}
+            {"section_id": "S01", "tables": [], "figures": [], "equations": [], "unnumbered_equations": 0,
+             "plots_on_page": [plot_entry(page, source="labels") for page in (1, 2, 3, 4)]}
         ]
 
     def test_a_failed_layout_scan_still_lists_the_line_labels(self, inventory_pdf, monkeypatch):
@@ -570,6 +640,214 @@ class TestInventory:
         assert row["figures"] == ["Figure 2"]
 
 
+def build_pdf(tmp_path, *builders, name="built.pdf"):
+    """A PDF whose pages come from the page builders, in order."""
+    doc = pymupdf.open()
+    for build in builders:
+        build(doc)
+    path = str(tmp_path / name)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def only_page(path):
+    """The inventory row and plot entry of a one-page PDF."""
+    row = pdf_sections.sections_for_pdf(path, inventory=True)["inventory"][0]
+    assert len(row["plots_on_page"]) == 1
+    return row, row["plots_on_page"][0]
+
+
+def use_split(monkeypatch, cells):
+    from zotero_mcp import pdf_layout
+
+    fake = FakeSplit(cells)
+    monkeypatch.setattr(pdf_layout, "split_panels", fake, raising=False)
+    return fake
+
+
+class TestPlotsOnPage:
+    """Each inventory row counts the plots of each of its pages."""
+
+    def test_drawing_boxes_count_one_each_and_never_call_the_split(self, tmp_path, monkeypatch):
+        fake = use_split(monkeypatch, FOUR_CELLS)
+
+        _row, entry = only_page(build_pdf(tmp_path, add_drawings_page))
+
+        assert entry == plot_entry(1, 2, "layout", panel_rects=[
+            "0.1634,0.1263,0.4902,0.2525", "0.1634,0.5051,0.4902,0.2525"])
+        assert fake.calls == []
+
+    def test_an_image_box_counts_the_cells_of_the_split(self, tmp_path, monkeypatch):
+        fake = use_split(monkeypatch, FOUR_CELLS)
+
+        row, entry = only_page(build_pdf(tmp_path, add_figure_page))
+
+        assert entry["plots"] == 4
+        assert entry["source"] == "grid"
+        assert entry["panel_rects"] == [
+            "0.1000,0.1000,0.2000,0.1000", "0.4000,0.1000,0.2000,0.1000",
+            "0.1000,0.3000,0.2000,0.1000", "0.4000,0.3000,0.2000,0.1000",
+        ]
+        assert len(fake.calls) == 1
+        called_box, called_options = fake.calls[0]
+        assert [round(value, 4) for value in called_box] == [0.1176, 0.1263, 0.3922, 0.1768]
+        assert called_options == {}
+        assert row["figures"] == ["Figure 2"]
+
+    @pytest.mark.parametrize("cells", [[], [[0.2, 0.2, 0.3, 0.1]]], ids=["none", "one"])
+    def test_an_image_box_that_the_split_cannot_cut_counts_once(self, tmp_path, monkeypatch, cells):
+        use_split(monkeypatch, cells)
+
+        _row, entry = only_page(build_pdf(tmp_path, add_figure_page))
+
+        assert entry == plot_entry(1, 1, "layout", panel_rects=[FIGURE_RECT])
+
+    def test_a_missing_split_counts_each_box_as_one(self, tmp_path, monkeypatch):
+        from zotero_mcp import pdf_layout
+
+        monkeypatch.delattr(pdf_layout, "split_panels", raising=False)
+
+        _row, entry = only_page(build_pdf(tmp_path, add_figure_page))
+
+        assert entry == plot_entry(1, 1, "layout", panel_rects=[FIGURE_RECT])
+
+    def test_a_split_that_raises_counts_each_box_as_one(self, tmp_path, monkeypatch):
+        from zotero_mcp import pdf_layout
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("split failed")
+
+        monkeypatch.setattr(pdf_layout, "split_panels", boom, raising=False)
+
+        _row, entry = only_page(build_pdf(tmp_path, add_figure_page))
+
+        assert entry == plot_entry(1, 1, "layout", panel_rects=[FIGURE_RECT])
+
+    def test_a_table_box_does_not_count_on_a_page_with_a_table_label(self, tmp_path, no_split):
+        row, entry = only_page(build_pdf(tmp_path, add_table_page))
+
+        assert row["tables"] == ["Table 1"]
+        assert entry == plot_entry(1)
+
+    def test_a_table_box_counts_once_on_a_page_with_no_table_label(self, tmp_path, no_split):
+        row, entry = only_page(build_pdf(tmp_path, lambda doc: add_table_page(doc, caption=False)))
+
+        assert row["tables"] == []
+        assert entry["plots"] == 1
+        assert entry["source"] == "layout"
+        assert len(entry["panel_rects"]) == 1
+        assert no_split.calls == []
+
+    def test_an_equation_box_never_counts(self, tmp_path, no_split):
+        row, entry = only_page(build_pdf(tmp_path, add_math_page))
+
+        assert row["equations"] == ["(3)"]
+        assert entry == plot_entry(1)
+
+    def test_a_scanned_page_with_no_box_is_split_whole_with_its_text_masked(self, tmp_path, monkeypatch):
+        fake = use_split(monkeypatch, FOUR_CELLS[:3])
+
+        row, entry = only_page(build_pdf(tmp_path, add_scan_page))
+
+        assert entry["scanned"] is True
+        assert entry["plots"] == 3
+        assert entry["source"] == "grid"
+        assert len(entry["panel_rects"]) == 3
+        assert fake.calls == [([0, 0, 1, 1], {"mask_text": True})]
+        assert row["figures"] == ["FIGURE 3"]
+
+    def test_a_scanned_page_that_the_split_cannot_cut_falls_back_to_its_captions(self, tmp_path, monkeypatch):
+        use_split(monkeypatch, [])
+
+        row, entry = only_page(build_pdf(tmp_path, add_scan_page))
+
+        assert entry == plot_entry(1, 1, "captions", scanned=True)
+        assert row["figures"] == ["FIGURE 3"]
+
+    def test_a_scanned_page_with_no_caption_and_no_cell_counts_zero(self, tmp_path, monkeypatch):
+        use_split(monkeypatch, [])
+
+        _row, entry = only_page(build_pdf(tmp_path, lambda doc: add_scan_page(doc, text="")))
+
+        assert entry == plot_entry(1, 0, "grid", scanned=True)
+
+    @pytest.mark.parametrize("coverage, scanned", [(0.9, False), (0.96, True)])
+    def test_a_scan_is_one_image_over_95_percent_of_the_page(self, tmp_path, no_split, coverage, scanned):
+        _row, entry = only_page(build_pdf(tmp_path, lambda doc: add_scan_page(doc, coverage=coverage)))
+
+        assert entry["scanned"] is scanned
+
+    def test_a_layout_exception_counts_the_figure_labels(self, tmp_path, monkeypatch, no_split):
+        from zotero_mcp import pdf_layout
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("layout failed")
+
+        monkeypatch.setattr(pdf_layout, "detect_page_regions", boom)
+
+        row, entry = only_page(build_pdf(tmp_path, add_line_caption_page))
+
+        assert row["figures"] == ["Figure 13-19", "Figure 13-20", "Fig. 3.1"]
+        assert entry == plot_entry(1, 3, "labels")
+        assert no_split.calls == []
+
+    def test_a_layout_error_counts_the_figure_labels(self, tmp_path, monkeypatch, no_split):
+        from zotero_mcp import pdf_layout
+
+        monkeypatch.setattr(pdf_layout, "detect_page_regions", lambda *_a, **_k: {"error": "no page"})
+
+        _row, entry = only_page(build_pdf(tmp_path, add_figure_page))
+
+        assert entry == plot_entry(1, 1, "labels")
+
+    def test_an_in_text_mention_is_listed_but_is_not_a_plot(self, tmp_path, no_split):
+        row, entry = only_page(build_pdf(tmp_path, lambda doc: add_text_page(doc, "Figure 5 shows the leakage.")))
+
+        assert row["figures"] == ["Figure 5"]
+        assert entry == plot_entry(1)
+
+    def test_distinct_caption_blocks_are_the_count_when_there_is_no_graphic(self, tmp_path, no_split):
+        def captions(doc):
+            add_text_page(doc, "Figure 4. First plot.", "FIGURE 5. Second plot.", "Fig. 4. First plot again.")
+
+        row, entry = only_page(build_pdf(tmp_path, captions))
+
+        assert entry == plot_entry(1, 2, "captions")
+        assert row["figures"] == ["Figure 4", "FIGURE 5"]
+
+    def test_a_caption_set_in_capitals_is_listed_as_a_figure_label(self, tmp_path, no_split):
+        row, _entry = only_page(build_pdf(tmp_path, lambda doc: add_text_page(doc, "FIGURE 10. TITLE")))
+
+        assert row["figures"] == ["FIGURE 10"]
+
+    def test_a_shared_page_is_listed_in_both_rows_with_its_own_copy(self, inventory_pdf, tmp_path, no_split):
+        shared = with_outline(inventory_pdf, [[1, "First", 4], [1, "Second", 4]], tmp_path, "shared-plots.pdf")
+
+        rows = pdf_sections.sections_for_pdf(shared, pages=(4, 4), inventory=True)["inventory"]
+
+        expected = [plot_entry(4, 1, panel_rects=[FIGURE_RECT])]
+        assert [row["plots_on_page"] for row in rows] == [expected, expected]
+        rows[0]["plots_on_page"][0]["panel_rects"].append("0,0,1,1")
+        assert rows[1]["plots_on_page"][0]["panel_rects"] == [FIGURE_RECT]
+
+    def test_a_section_over_several_pages_lists_one_entry_per_page_in_order(self, tmp_path, no_split):
+        path = build_pdf(tmp_path, lambda doc: add_text_page(doc, "Plain."), add_drawings_page, add_figure_page)
+
+        row = pdf_sections.sections_for_pdf(path, inventory=True)["inventory"][0]
+
+        assert [(entry["page"], entry["plots"]) for entry in row["plots_on_page"]] == [(1, 0), (2, 2), (3, 1)]
+
+    def test_the_markdown_plots_column_sums_the_pages_of_a_row(self, tmp_path, no_split):
+        path = build_pdf(tmp_path, add_drawings_page, add_figure_page)
+        data = pdf_sections.sections_for_pdf(path, inventory=True)
+
+        markdown = pdf_sections.format_sections_markdown(data)
+
+        assert "| S01 | - | Figure 2 | - | 0 | 3 |" in markdown
+
+
+@pytest.mark.usefixtures("no_split")
 class TestLineLabels:
     """Captions with no colon or period ("Figure 13-19 Title") come from the line pattern."""
 
@@ -642,6 +920,7 @@ class TestLineLabels:
         assert rows[0]["figures"] == ["Figure 2"]
 
 
+@pytest.mark.usefixtures("no_split")
 class TestMarkdown:
     def test_renders_header_sections_and_inventory(self, inventory_pdf, tmp_path):
         path = with_outline(
@@ -657,9 +936,11 @@ class TestMarkdown:
         assert "Item `ABCD1234` · attachment `EFGH5678` · 4 pages · source: outline · scope: pages 1-4" in markdown
         assert "| S02 | pages 2-3 | 1 | outline | Tables |" in markdown
         assert "## Inventory" in markdown
-        assert "| S01 | Table 1 | - | - | 0 |" in markdown
-        assert "| S03 | - | Figure 2 | (3) | 1 |" in markdown
-        assert "| S04 | - | Figure 2 | - | 0 |" in markdown
+        assert "| Section | Tables | Figures | Equations | Unnumbered equations | Plots |" in markdown
+        assert "| S01 | Table 1 | - | - | 0 | 0 |" in markdown
+        assert "| S02 | Table 1 | - | (3) | 1 | 0 |" in markdown
+        assert "| S03 | - | Figure 2 | (3) | 1 | 1 |" in markdown  # page 4 is shared with S04
+        assert "| S04 | - | Figure 2 | - | 0 | 1 |" in markdown
 
     def test_without_inventory_or_caller_fields(self, tmp_path):
         data = pdf_sections.sections_for_pdf(make_pdf(tmp_path, 12), chunk_pages=8)
