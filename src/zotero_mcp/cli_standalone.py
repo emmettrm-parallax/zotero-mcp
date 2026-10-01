@@ -709,8 +709,8 @@ def cmd_tables(args):
                  pdf_tables.format_tables_markdown)
 
 
-def _read_index_json(source: str, *, what: str = "index", code: str = "invalid_index"):
-    """The *what* object from FILE, or from stdin when *source* is `-`."""
+def _read_index_json(source: str):
+    """The index object from FILE, or from stdin when *source* is `-`."""
     try:
         if source == "-":
             raw = sys.stdin.read()
@@ -721,7 +721,7 @@ def _read_index_json(source: str, *, what: str = "index", code: str = "invalid_i
     except (OSError, ValueError) as exc:
         where = "stdin" if source == "-" else source
         raise _cli_json.CliError(
-            f"Cannot read {what} JSON from {where}: {exc}", code=code,
+            f"Cannot read index JSON from {where}: {exc}", code="invalid_index",
         ) from exc
 
 
@@ -987,11 +987,32 @@ def _index_cards_list(args, ctx) -> dict:
     }
 
 
+def _read_card_json(source: str) -> dict:
+    """The card object from FILE, or from stdin when *source* is `-`.
+
+    A twin of `_read_index_json` with its own error code, kept separate so `index push`
+    keeps its own `invalid_index` wording and this stays inside the cards code added for
+    `index cards push`.
+    """
+    try:
+        if source == "-":
+            raw = sys.stdin.read()
+        else:
+            with open(source, encoding="utf-8") as handle:
+                raw = handle.read()
+        return json.loads(raw)
+    except (OSError, ValueError) as exc:
+        where = "stdin" if source == "-" else source
+        raise _cli_json.CliError(
+            f"Cannot read card JSON from {where}: {exc}", code="invalid_card",
+        ) from exc
+
+
 def _index_cards_push(args, ctx) -> dict:
     """`index cards push`: write or replace the one card note of an item."""
     from zotero_mcp import pdf_source, source_card
 
-    card = _read_index_json(args.from_file, what="card", code="invalid_card")
+    card = _read_card_json(args.from_file)
     problems = source_card.validate_card(card)
     if problems:
         shown = "; ".join(problems[:10])
