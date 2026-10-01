@@ -195,7 +195,7 @@ for the output contract.
 #### `index cards push`
 
  - `<key>` -- Item key or PDF attachment key
- - `--from` -- default `-` -- Card JSON file; - reads stdin (default)
+ - `--from` -- default `-` -- Card JSON file. Use - to read stdin, the default.
 
 ## `notes (alias: n)`
 

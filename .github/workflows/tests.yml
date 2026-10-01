@@ -3,8 +3,11 @@ name: Tests
 # This workflow runs the full suite against a clean install (the `pdf`
 # extra only, no `semantic`). That install has no chromadb, so 14 tests
 # fail and 22 more error on collection. fork_test_baseline.txt records
-# that known set. The job fails only when a FAILED or ERROR line appears
-# that the baseline does not already list.
+# that known set, in a node id form with no failure message attached.
+# scripts/compare_test_baseline.py strips the message pytest 9 appends
+# to every FAILED/ERROR line when CI is set, then compares against the
+# baseline. The job fails only when a line appears that the baseline
+# does not already list.
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -50,75 +53,5 @@ jobs:
 
       - name: Compare against the known-failure baseline
         run: |
-          python3 - <<'PY'
-          import re
-          import sys
-
-          BASELINE_PATH = "fork_test_baseline.txt"
-          LOG_PATH = "pytest_output.txt"
-          EXIT_CODE_PATH = "pytest_exit_code.txt"
-
-          # A FAILED or ERROR line from the short test summary pytest
-          # prints at the end of a run. This pattern never matches the
-          # "ERROR collecting ..." header pytest prints earlier, in the
-          # verbose traceback section.
-          LINE_RE = re.compile(r"^(FAILED|ERROR)\s+\S")
-
-
-          def read_baseline(path):
-              with open(path, encoding="utf-8") as f:
-                  lines = [line.rstrip("\n") for line in f]
-              # Line 1 is a human summary. The rest are known lines.
-              return {line for line in lines[1:] if line.strip()}
-
-
-          def read_observed(path):
-              with open(path, encoding="utf-8") as f:
-                  text = f.read()
-              marker = "short test summary info"
-              tail = text.split(marker, 1)[1] if marker in text else text
-              return {line.strip() for line in tail.splitlines() if LINE_RE.match(line)}
-
-
-          def read_exit_code(path):
-              with open(path, encoding="utf-8") as f:
-                  return int(f.read().strip())
-
-
-          def main():
-              exit_code = read_exit_code(EXIT_CODE_PATH)
-              # 0 means every test passed. 1 means some tests failed or
-              # errored, the case this gate exists to tolerate. Any other
-              # code means pytest did not finish a normal run (it was
-              # interrupted, it hit an internal error, or it collected no
-              # tests), so the baseline comparison below cannot be trusted.
-              if exit_code not in (0, 1):
-                  print(f"pytest exited {exit_code}, not a normal pass or fail run.")
-                  print("Treating this as a failure. Tail of the log:")
-                  with open(LOG_PATH, encoding="utf-8") as f:
-                      lines = f.readlines()
-                  print("".join(lines[-40:]))
-                  sys.exit(1)
-
-              baseline = read_baseline(BASELINE_PATH)
-              observed = read_observed(LOG_PATH)
-
-              new_failures = sorted(observed - baseline)
-              fixed = sorted(baseline - observed)
-
-              if fixed:
-                  print(f"{len(fixed)} known failure(s) no longer reproduce. Update the baseline:")
-                  for line in fixed:
-                      print(f"  {line}")
-
-              if new_failures:
-                  print(f"{len(new_failures)} new failure(s) not in {BASELINE_PATH}:")
-                  for line in new_failures:
-                      print(f"  {line}")
-                  sys.exit(1)
-
-              print(f"No new failures. {len(observed)} known FAILED/ERROR lines observed, {len(baseline)} in the baseline.")
-
-
-          main()
-          PY
+          echo "Pytest summary: $(tail -n 1 pytest_output.txt)"
+          python3 scripts/compare_test_baseline.py

@@ -1,18 +1,4 @@
-14 failed, 3707 passed, 86 skipped, 19 warnings, 22 errors in 64.46s (0:01:04)
-FAILED tests/test_connector_search_fallback.py::test_keyword_fallback_when_semantic_search_is_unavailable
-FAILED tests/test_fulltext_cache.py::test_update_db_purges_stale_cache_entries
-FAILED tests/test_fulltext_cache.py::test_update_db_stays_silent_when_nothing_is_stale
-FAILED tests/test_fulltext_cache.py::test_update_db_does_not_purge_after_a_failed_run
-FAILED tests/test_fulltext_cache.py::test_update_db_survives_a_broken_cache
-FAILED tests/test_global_search.py::test_semantic_search_defaults_to_the_active_library
-FAILED tests/test_global_search.py::test_semantic_search_all_libraries_drops_the_filter
-FAILED tests/test_global_search.py::test_semantic_global_search_needs_the_sqlite_backend
-FAILED tests/test_global_search.py::test_semantic_library_id_and_all_libraries_conflict
-FAILED tests/test_global_search.py::test_semantic_global_results_name_their_library
-FAILED tests/test_lifespan.py::test_due_update_does_import_the_heavy_module
-FAILED tests/test_regression_bugs.py::TestProgressWidthClipping::test_cjk_title_cannot_wrap_the_progress_line
-FAILED tests/test_regression_bugs.py::TestProgressWidthClipping::test_ascii_clips_like_a_plain_slice
-FAILED tests/test_search_improvements.py::TestVerificationGuidance::test_semantic_fallback_has_stronger_warning
+14 failed, 3860 passed, 87 skipped, 19 warnings, 22 errors in 55.68s
 ERROR tests/test_attachment_priority.py
 ERROR tests/test_batch_adapter_compat.py
 ERROR tests/test_chunked_metadata_lookup.py
@@ -35,3 +21,17 @@ ERROR tests/test_semantic_stats.py
 ERROR tests/test_streaming_indexing.py
 ERROR tests/test_sync_watermark_per_library.py
 ERROR tests/test_update_lock_reliability.py
+FAILED tests/test_connector_search_fallback.py::test_keyword_fallback_when_semantic_search_is_unavailable
+FAILED tests/test_fulltext_cache.py::test_update_db_does_not_purge_after_a_failed_run
+FAILED tests/test_fulltext_cache.py::test_update_db_purges_stale_cache_entries
+FAILED tests/test_fulltext_cache.py::test_update_db_stays_silent_when_nothing_is_stale
+FAILED tests/test_fulltext_cache.py::test_update_db_survives_a_broken_cache
+FAILED tests/test_global_search.py::test_semantic_global_results_name_their_library
+FAILED tests/test_global_search.py::test_semantic_global_search_needs_the_sqlite_backend
+FAILED tests/test_global_search.py::test_semantic_library_id_and_all_libraries_conflict
+FAILED tests/test_global_search.py::test_semantic_search_all_libraries_drops_the_filter
+FAILED tests/test_global_search.py::test_semantic_search_defaults_to_the_active_library
+FAILED tests/test_lifespan.py::test_due_update_does_import_the_heavy_module
+FAILED tests/test_regression_bugs.py::TestProgressWidthClipping::test_ascii_clips_like_a_plain_slice
+FAILED tests/test_regression_bugs.py::TestProgressWidthClipping::test_cjk_title_cannot_wrap_the_progress_line
+FAILED tests/test_search_improvements.py::TestVerificationGuidance::test_semantic_fallback_has_stronger_warning

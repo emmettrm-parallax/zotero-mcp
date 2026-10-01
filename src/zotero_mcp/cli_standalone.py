@@ -1896,7 +1896,7 @@ def build_parser() -> argparse.ArgumentParser:
     ixcp = ixc_sub.add_parser("push", help="Write or replace an item's source card")
     ixcp.add_argument("key", help="Item key or PDF attachment key")
     ixcp.add_argument("--from", dest="from_file", default="-", metavar="FILE",
-                      help="Card JSON file; - reads stdin (default)")
+                      help="Card JSON file. Use - to read stdin, the default.")
     # A leaf parser is not wrapped by add_parser above, so it gets --json here.
     # SUPPRESS keeps a `--json` given before the command from being undone.
     for leaf in (ixp, ixs, ixq, ixc, ixcp):
