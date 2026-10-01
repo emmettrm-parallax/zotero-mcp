@@ -804,6 +804,52 @@ def test_lead_omits_null_keys_of_every_kind_and_keeps_values_that_are_not_null()
     assert all("hit" not in record for kind in KINDS for record in out[kind])          # no terms: no hit
 
 
+def test_lead_key_holds_the_first_12_words_of_statement_when_blank():
+    statement = "The seal ring loses contact under thermal growth and axial load during a cold start."
+    entry = fact("F1", statement=statement)                        # quantity and value stay null
+    words = statement.split()
+    assert len(words) > 12                                         # the fixture must exercise the cut
+    lead = project_index(make_index(facts=[entry]), "lead")["facts"][0]
+    assert lead["lead"] == " ".join(words[:12]) + " ..."
+
+
+def test_lead_key_keeps_a_short_statement_whole():
+    entry = fact("F1", statement="A short one.")
+    lead = project_index(make_index(facts=[entry]), "lead")["facts"][0]
+    assert lead["lead"] == "A short one."
+
+
+def test_lead_key_falls_back_to_text_when_statement_is_blank():
+    entry = fact("F1", text="Only a text field carries this fact, twelve words long right up to here now.")
+    words = entry["text"].split()
+    lead = project_index(make_index(facts=[entry]), "lead")["facts"][0]
+    assert lead["lead"] == " ".join(words[:12]) + (" ..." if len(words) > 12 else "")
+
+
+def test_lead_key_absent_when_a_quantity_is_present():
+    entry = fact("F1", quantity="gap", statement="A statement that would otherwise make a lead here.")
+    lead = project_index(make_index(facts=[entry]), "lead")["facts"][0]
+    assert "lead" not in lead
+
+
+def test_lead_key_absent_when_value_is_zero():
+    entry = fact("F1", value=0, statement="A statement that would otherwise make a lead here too.")
+    lead = project_index(make_index(facts=[entry]), "lead")["facts"][0]
+    assert "lead" not in lead                                      # 0 is a value, not a blank
+
+
+def test_lead_key_present_when_value_is_a_blank_string():
+    entry = fact("F1", value="  ", statement="A statement kept whole by the blank value rule here.")
+    lead = project_index(make_index(facts=[entry]), "lead")["facts"][0]
+    assert lead["lead"] == "A statement kept whole by the blank value rule here."
+
+
+def test_lead_key_absent_when_statement_and_text_are_both_blank():
+    entry = fact("F1")
+    lead = project_index(make_index(facts=[entry]), "lead")["facts"][0]
+    assert "lead" not in lead
+
+
 def test_lead_passes_header_sections_schema_and_unknown_keys_in_full():
     index = _one_of_each()
     out = project_index(index, "lead")

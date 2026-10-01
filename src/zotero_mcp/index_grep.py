@@ -36,7 +36,9 @@ edge hyphens plus the casefolded words, so "brush-seal" adds nothing to "brush s
 matches only a symbol field, by exact equality with case, because "s" or "n" would hit every
 fact.
 
-A ``lead`` record leaves out each key whose value is null. A ``full`` record stays as it is.
+A ``lead`` record leaves out each key whose value is null. A ``full`` record stays as it is. A
+fact with no quantity and no value gains a ``lead`` key: the first 12 words of its statement, or
+of its text when it has no statement, with `` ...`` added when the words run past 12.
 """
 
 from __future__ import annotations
@@ -435,12 +437,23 @@ def vocabulary_on_pages(index: dict, pages: list[int]) -> dict:
     return out
 
 
+def _blank(value) -> bool:
+    """True for ``None`` or an all-whitespace string. A number, including ``0``, is not blank."""
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
 def _lead(kind: str, entry):
     if not isinstance(entry, dict):
         return copy.deepcopy(entry)
     lead = {name: copy.deepcopy(entry[name]) for name in LEAD_FIELDS[kind] if entry.get(name) is not None}
     if "hit" in entry:
         lead["hit"] = list(entry["hit"])
+    if kind == "facts" and _blank(entry.get("quantity")) and _blank(entry.get("value")):
+        source = entry.get("statement") or entry.get("text")
+        if source:
+            words = source.split()
+            cut = " ..." if len(words) > 12 else ""
+            lead["lead"] = " ".join(words[:12]) + cut
     return lead
 
 
@@ -449,8 +462,10 @@ def project_index(index: dict, fields: str = "lead") -> dict:
 
     ``full`` is a deep copy: the records stay as they are, with their ``hit``. ``lead`` keeps the
     ``LEAD_FIELDS`` of each record and its ``hit``, and leaves out each key whose value is null.
-    ``header``, ``sections``, ``schema`` and any unknown key pass in full. The result shares
-    nothing with the input.
+    A fact record with no quantity and no value also gains a ``lead`` key: the first 12 words of
+    its statement, or of its text when the statement is blank, with `` ...`` added when the words
+    run past 12. ``header``, ``sections``, ``schema`` and any unknown key pass in full. The
+    result shares nothing with the input.
     """
     if fields == "full":
         return copy.deepcopy(index)

@@ -765,10 +765,17 @@ def _format_index_show(data: dict) -> str:
 
 
 def _fact_lead_line(fact: dict) -> str:
-    """`p5 F0012 quantity = value unit (condition) [ref]`. A null part is left out."""
+    """`p5 F0012 quantity = value unit (condition) [ref]`. A null part is left out.
+
+    A fact with no quantity and no value carries a `lead` key instead. The line then reads
+    `p5 F0012 "<lead>"`.
+    """
     def shown(key):
         value = fact.get(key)
         return "-" if value is None else value
+
+    if fact.get("lead") is not None:
+        return f"p{shown('page')} {shown('id')} \"{fact['lead']}\""
 
     line = f"p{shown('page')} {shown('id')} {shown('quantity')} = {shown('value')}"
     for key, wrap in (("unit", "{}"), ("condition", "({})"), ("ref", "[{}]")):
