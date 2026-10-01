@@ -75,3 +75,11 @@ Fork upkeep: `.github/workflows/tests.yml` runs the suite on Python 3.11 with th
 Semantic store: the tool venv holds chromadb, sentence-transformers and torch. The config uses the `qwen` model with passage chunks. The store at `~/.config/zotero-mcp/chroma_db` holds 2128 passages. The finder trial found no accuracy gain over tags or cards on a 24-item library, so the research skill does not use it.
 Library: 15 items carry an index. The 12 built this round carry `status/index-failed-gate`. Audit numbers, cost and open items: Meridian memory note `source-index-pipeline-built`.
 The worktrees `a0` to `a3`, `f1` to `f3`, `r3f1` to `r3f3` and the `si4-*` set are removed. Only the main checkout remains.
+
+## 9. Added 2026-10-01: round 5
+
+Branch `feat/source-index-tools` holds the round-5 merges at 3e9fd96. Suite: 4477 passed, 0 new failures, CI green.
+New: `split_panels(page, bbox, mask_text=False, scale=1.5)` in `pdf_layout.py` finds plot panels inside a box by whitespace cuts. Pure Python plus pymupdf. Calibrated on three library PDFs, see `tests/test_panel_split.py`.
+New: `sections --inventory` lists `plots_on_page` per row: `{"page", "plots", "source", "scanned", "panel_rects"}`. The count comes from drawing boxes, from table boxes without a table label, and from grid cells in image boxes. On a scan the split runs on the whole page. The Meridian `split_units.py` reads it.
+Known gap: a page with `/Rotate` 90 or 270 and a full-page image does not get the `scanned` flag. The layout frame is unrotated. 301 of 12,123 library pages.
+Re-test: 8T22IS9X and CWPBGQLT were built again with the new reader prompts and the new split. Both pass the audit gate at 0.1 percent misses. Audit numbers and open items: Meridian memory note `source-index-pipeline-built`.
