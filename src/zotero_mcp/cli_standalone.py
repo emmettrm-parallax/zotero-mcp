@@ -896,9 +896,9 @@ def _format_index_cards_push(data: dict) -> str:
 
 def _index_cards_list(args, ctx) -> dict:
     """`index cards`: every item's card, filtered by `--grep` and ranked by terms hit."""
-    from zotero_mcp import source_card
+    from zotero_mcp import index_query, source_card
 
-    terms = None if args.grep is None else _index_terms(args.grep, args)
+    terms = None if args.grep is None else index_query._terms(args.grep, regex=args.regex)
     setup_zotero_environment()
     result = source_card.list_cards(terms=terms, regex=args.regex, ctx=ctx)
     cards = result["cards"] if args.expand else [
