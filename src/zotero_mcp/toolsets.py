@@ -108,6 +108,14 @@ TOOLSETS: dict[str, frozenset[str]] = {
             "zotero_get_pdf_outline",
         }
     ),
+    # Source-index reads: the same `index show`/`index search` the CLI exposes,
+    # behind a narrower, agent-safe contract (no bare read, a hard limit cap).
+    "source-index": frozenset(
+        {
+            "zotero_index_show",
+            "zotero_index_search",
+        }
+    ),
     # The ChatGPT deep-research connector contract, which requires tools named
     # exactly ``search`` and ``fetch``. Meaningless over stdio, so this group
     # is transport-scoped rather than listed in DEFAULT_ON; see
@@ -126,6 +134,7 @@ DEFAULT_ON: frozenset[str] = frozenset(
         "libraries",
         "search-admin",
         "pdf-geometry",
+        "source-index",
     }
 )
 

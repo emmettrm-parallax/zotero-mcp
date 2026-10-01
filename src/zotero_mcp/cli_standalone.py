@@ -799,128 +799,33 @@ def _format_index_search(data: dict) -> str:
     return "\n\n".join(blocks) or "No items to search."
 
 
-def _index_terms(values, args) -> list:
-    """The terms of `index show --grep` or `index search`, checked before any read.
+from zotero_mcp.index_query import SHOW_LIMIT as _INDEX_SHOW_LIMIT  # noqa: E402,F401
 
-    `parse_terms` refuses an empty list (`bad_grep`) and `check_terms` a pattern
-    that does not compile (`bad_regex`), so a bad call never reaches the notes.
-    """
-    from zotero_mcp import index_grep
-
-    terms = index_grep.parse_terms(values, regex=args.regex)
-    index_grep.check_terms(terms, regex=args.regex)
-    return terms
-
-
-def _filter_with_section(report: dict, section) -> dict:
-    """The filter report with `section` after `pages`, where the contract lists it."""
-    out = {}
-    for key, value in report.items():
-        out[key] = value
-        if key == "pages":
-            out["section"] = section
-    out.setdefault("section", section)
-    return out
-
-
-#: What `index show` applies when a filter flag is on and `--limit` is not. The
-#: parser cannot import `index_grep`, which loads only when a command runs, so
-#: this mirrors `index_grep.SHOW_LIMIT`. A test compares the two.
-_INDEX_SHOW_LIMIT = 40
-
-#: The entry lists of an index that `index search` returns for each item.
-_INDEX_SEARCH_LISTS = ("sections", "facts", "vocabulary", "tables_figures", "equations", "gaps")
-
-#: The parts of a filter report that stay on each item of `index search`.
-_INDEX_SEARCH_REPORT = ("expanded_terms", "expanded_total", "expanded_symbols", "broad_terms",
-                        "term_counts", "total", "matched", "returned", "truncated")
+#: `_INDEX_SHOW_LIMIT` above is kept only because a test compares it with
+#: `index_grep.SHOW_LIMIT`. The logic that used it now lives on `index_query`, which
+#: both this CLI and the MCP tools of `tools/index_tools.py` call.
 
 
 def _index_show(args, ctx) -> dict:
-    """`index show`: the index as stored, or the filtered view when a filter flag is on."""
-    from zotero_mcp import pdf_source, source_index
+    """`index show`: thin CLI wrapper over `index_query.show`."""
+    from zotero_mcp import index_query
 
-    pages = _parse_pages(args.pages)
-    filtered = args.grep is not None or args.fields is not None or args.limit is not None
-    if args.grep is None and (args.expand or args.regex):
-        raise _cli_json.CliError("--expand and --regex need --grep", code="bad_grep")
-    terms = None if args.grep is None else _index_terms(args.grep, args)
     setup_zotero_environment()
-    data = source_index.show_index(pdf_source.parent_key(args.key), section=args.section, ctx=ctx)
-    if not filtered:
-        if pages is not None:
-            # After --section, so the two filters compose (AND). The slice
-            # checks the pages against the index header, not against a PDF.
-            from zotero_mcp import index_slice
-
-            data = {**data, "index": index_slice.filter_index_pages(data["index"], pages)}
-        return data
-
-    from zotero_mcp import index_grep
-
-    index, report = index_grep.apply_filters(
-        data["index"], pages=pages, terms=terms, regex=args.regex, expand=args.expand,
-        fields=args.fields or "full",
-        limit=_INDEX_SHOW_LIMIT if args.limit is None else args.limit,
+    return index_query.show(
+        args.key, section=args.section, pages=args.pages, grep=args.grep, regex=args.regex,
+        expand=args.expand, fields=args.fields, limit=args.limit, ctx=ctx,
     )
-    return {**data, "index": index, "filter": _filter_with_section(report, args.section)}
 
 
 def _index_search(args, ctx) -> dict:
-    """`index search`: the terms in the index of each item of the set, most facts first."""
-    from zotero_mcp import index_grep, pdf_source, source_index
+    """`index search`: thin CLI wrapper over `index_query.search`."""
+    from zotero_mcp import index_query
 
-    terms = _index_terms(args.terms, args)
     setup_zotero_environment()
-    if args.items is not None:
-        requested = [key.strip() for key in args.items.split(",") if key.strip()]
-        keys = list(dict.fromkeys(pdf_source.parent_key(key) for key in requested))
-        tag = None
-    else:
-        requested, tag = None, args.tag
-        keys = list(dict.fromkeys(source_index.list_items_with_tag(tag)))
-    indexes = source_index.show_indexes(keys, ctx=ctx) if keys else {}
-
-    hits, no_hits, skipped = [], [], []
-    for key in keys:
-        result = indexes.get(key) or {"error": {"code": "error", "message": "no index was read"}}
-        if result.get("error"):
-            error = result["error"]
-            skipped.append({"item_key": key, "code": error.get("code") or "error",
-                            "message": error.get("message") or ""})
-            continue
-        index, report = index_grep.apply_filters(
-            result["index"], terms=terms, regex=args.regex, expand=args.expand,
-            fields=args.fields, limit=args.limit,
-        )
-        matched = report.get("matched") or {}
-        if not any(matched.values()):
-            no_hits.append(key)
-            continue
-        header = result["index"].get("header")
-        header = header if isinstance(header, dict) else {}
-        item = {
-            "item_key": key,
-            "title": header.get("title"),
-            "year": header.get("year"),
-            "attachment_key": header.get("attachment_key"),
-            "page_count": header.get("page_count"),
-            "filter": {name: report.get(name) for name in _INDEX_SEARCH_REPORT},
-            **{name: index.get(name, []) for name in _INDEX_SEARCH_LISTS},
-        }
-        hits.append(((-matched.get("facts", 0), -sum(matched.values()), key), item))
-
-    hits.sort(key=lambda pair: pair[0])
-    items = [item for _order, item in hits]
-    if args.max_items:
-        items = items[:args.max_items]
-    return {
-        "terms": terms, "regex": args.regex, "expand": args.expand, "fields": args.fields,
-        "limit": args.limit, "max_items": args.max_items, "tag": tag,
-        "items_requested": requested, "searched": len(keys),
-        "items_truncated": len(hits) - len(items), "items": items,
-        "no_hits": sorted(no_hits), "skipped": skipped,
-    }
+    return index_query.search(
+        args.terms, items=args.items, tag=args.tag, fields=args.fields, expand=args.expand,
+        limit=args.limit, max_items=args.max_items, regex=args.regex, ctx=ctx,
+    )
 
 
 def cmd_index(args):

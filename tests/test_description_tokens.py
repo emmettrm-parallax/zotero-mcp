@@ -38,6 +38,9 @@ TOOL_BUDGETS = {
     # tools/retrieval.py
     "zotero_get_tags":                 ( 85, 195),
     "zotero_get_item_children":        (138, 310),
+    # tools/index_tools.py
+    "zotero_index_show":               (187, 419),
+    "zotero_index_search":             (134, 300),
     # tools/write.py
     "zotero_add_item":                 (277, 450),  # max clamped to the hard cap
     "zotero_update_item":              (190, 426),
