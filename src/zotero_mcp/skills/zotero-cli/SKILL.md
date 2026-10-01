@@ -32,6 +32,8 @@ invocation with a stable shape, so you never parse prose:
 
 Both go to **stdout**; `[INFO]`/`[WARN]` diagnostics go to stderr. Check `ok`
 before using `data`. Run `zotero-cli --json-schema` for the full contract.
+`read --text` and `grep --text` are the plain-text exceptions: they print page
+text or match lines, never the JSON envelope.
 
 ## The core loop
 

@@ -394,3 +394,19 @@ def format_grep_markdown(data: dict) -> str:
         for snippet in row.get("snippets") or []:
             lines.append(f"- {snippet['text']}")
     return "\n".join(lines) + "\n"
+
+
+def format_grep_text(data: dict) -> str:
+    """``grep_pdf``'s result as plain text: one ``pN: snippet`` line per snippet.
+
+    No summary line and no page headings, unlike :func:`format_grep_markdown`:
+    a caller piping this into another tool wants match lines alone. Whitespace
+    inside a snippet is collapsed to single spaces. Matched terms stay marked
+    ``[[ ]]``. Empty when there are no hits.
+    """
+    lines = []
+    for row in data.get("pages") or []:
+        for snippet in row.get("snippets") or []:
+            text = " ".join(snippet["text"].split())
+            lines.append(f"p{row['page']}: {text}")
+    return "\n".join(lines)
