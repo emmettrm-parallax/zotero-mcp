@@ -15,7 +15,7 @@ Set `ZOTERO_MCP_TOOLSETS` to control which groups are exposed:
 
 | Value | Effect |
 |---|---|
-| *(unset)* | Default profile — core tools plus `libraries`, `search-admin`, `pdf-geometry` |
+| *(unset)* | Default profile — core tools plus `libraries`, `search-admin`, `pdf-geometry`, `source-index` |
 | `all` | Everything (the pre-0.9 behaviour) |
 | `none` | Core tools only — the smallest surface |
 | `scite,feeds` | Core plus the named groups |
@@ -34,6 +34,7 @@ group name is an error at startup rather than a silent no-op.
 | `libraries` | **on** | List and switch between personal/group libraries |
 | `search-admin` | **on** | Build and inspect the semantic search index |
 | `pdf-geometry` | **on** | Page layout and PDF outline — pairs with area annotations |
+| `source-index` | **on** | `index_show`, `index_search` — the CLI's source-index reads, capped for an agent |
 | `chatgpt-connector` | auto | The `search`/`fetch` pair required by ChatGPT deep research |
 
 `chatgpt-connector` is scoped by transport: it turns on automatically when the
