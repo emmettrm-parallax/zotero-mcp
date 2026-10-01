@@ -846,6 +846,108 @@ def _index_search(args, ctx) -> dict:
     )
 
 
+#: `KEY kind title_short: scope`, at most this many characters, `[hit: ...]` inside the cap.
+_CARD_LINE_CAP = 200
+
+#: The fields a compact `index cards` record keeps, without `--expand`.
+_CARD_COMPACT_FIELDS = ("item_key", "kind", "title_short", "scope")
+
+
+def _card_line(card: dict, hit: list) -> str:
+    """`KEY kind title_short: scope`, at most `_CARD_LINE_CAP` characters.
+
+    `[hit: ...]` stays inside the cap: the title and scope are cut first, with the hit
+    note kept whole. Only a pathologically long hit list falls back to a hard cut of the
+    whole line.
+    """
+    tail = f" [hit: {', '.join(hit)}]" if hit else ""
+    head = f"{card.get('item_key')} {card.get('kind')} {card.get('title_short')}: {card.get('scope')}"
+    line = head + tail
+    if len(line) <= _CARD_LINE_CAP:
+        return line
+    room = _CARD_LINE_CAP - len(tail) - 3  # "..." marks the cut
+    if room < 1:
+        return line[:_CARD_LINE_CAP]
+    return head[:room] + "..." + tail
+
+
+def _card_block(card: dict) -> str:
+    """The full card, pretty-printed, for `index cards --expand`."""
+    head = f"## {card.get('item_key')} ({card.get('note_key', '-')})"
+    return head + "\n" + json.dumps(card, indent=2, ensure_ascii=False)
+
+
+def _format_index_cards(data: dict) -> str:
+    cards = data.get("cards") or []
+    if not cards:
+        return f"No cards match {', '.join(data['terms'])}." if data.get("terms") else "No cards."
+    if data.get("expand"):
+        return "\n\n".join(_card_block(card) for card in cards)
+    return "\n".join(_card_line(card, card.get("hit") or []) for card in cards)
+
+
+def _format_index_cards_push(data: dict) -> str:
+    verb = "Updated" if data.get("updated") else "Created"
+    line = f"{verb} the card for {data.get('item_key')} (note {data.get('note_key')})"
+    if data.get("trashed"):
+        line += f", trashed {data['trashed']} surplus card note(s)"
+    return line
+
+
+def _index_cards_list(args, ctx) -> dict:
+    """`index cards`: every item's card, filtered by `--grep` and ranked by terms hit."""
+    from zotero_mcp import source_card
+
+    terms = None if args.grep is None else _index_terms(args.grep, args)
+    setup_zotero_environment()
+    result = source_card.list_cards(terms=terms, regex=args.regex, ctx=ctx)
+    cards = result["cards"] if args.expand else [
+        {key: card.get(key) for key in (*_CARD_COMPACT_FIELDS, "hit")} for card in result["cards"]
+    ]
+    return {
+        "cards": cards, "count": result["count"], "terms": result["terms"],
+        "regex": args.regex, "expand": args.expand,
+    }
+
+
+def _read_card_json(source: str) -> dict:
+    """The card object from FILE, or from stdin when *source* is `-`.
+
+    A twin of `_read_index_json` with its own error code, kept separate so `index push`
+    keeps its own `invalid_index` wording and this stays inside the cards code added for
+    `index cards push`.
+    """
+    try:
+        if source == "-":
+            raw = sys.stdin.read()
+        else:
+            with open(source, encoding="utf-8") as handle:
+                raw = handle.read()
+        return json.loads(raw)
+    except (OSError, ValueError) as exc:
+        where = "stdin" if source == "-" else source
+        raise _cli_json.CliError(
+            f"Cannot read card JSON from {where}: {exc}", code="invalid_card",
+        ) from exc
+
+
+def _index_cards_push(args, ctx) -> dict:
+    """`index cards push`: write or replace the one card note of an item."""
+    from zotero_mcp import pdf_source, source_card
+
+    card = _read_card_json(args.from_file)
+    problems = source_card.validate_card(card)
+    if problems:
+        shown = "; ".join(problems[:10])
+        more = f"; and {len(problems) - 10} more" if len(problems) > 10 else ""
+        raise _cli_json.CliError(
+            f"Card is not valid ({len(problems)} problem(s)): {shown}{more}",
+            code="invalid_card",
+        )
+    setup_zotero_environment()
+    return source_card.push_card(pdf_source.parent_key(args.key), card, ctx=ctx)
+
+
 def cmd_index(args):
     """Push a source index into an item's notes, or read it back."""
     from zotero_mcp import pdf_source, source_index
@@ -871,6 +973,11 @@ def cmd_index(args):
         _emit_result(args, "index show", _index_show(args, ctx), _format_index_show)
     elif args.subcommand == "search":
         _emit_result(args, "index search", _index_search(args, ctx), _format_index_search)
+    elif args.subcommand == "cards":
+        if getattr(args, "cards_subcommand", None) == "push":
+            _emit_result(args, "index cards push", _index_cards_push(args, ctx), _format_index_cards_push)
+        else:
+            _emit_result(args, "index cards", _index_cards_list(args, ctx), _format_index_cards)
 
 
 def cmd_notes(args):
@@ -1777,9 +1884,20 @@ def build_parser() -> argparse.ArgumentParser:
     ixq.add_argument("--max-items", type=_nonneg_int, default=10,
                      help="Most items with hits to return, most facts first. 0 means no cap.")
     ixq.add_argument("--regex", action="store_true", help="Treat each TERM as one regex")
+    ixc = ix_sub.add_parser("cards", help="List every item's source card, or push one")
+    ixc.add_argument("--grep", action="append", metavar="TERM",
+                     help="Only cards that match TERM[,TERM] in any field. Repeat the flag to add terms.")
+    ixc.add_argument("--regex", action="store_true", help="Treat each --grep value as one regex")
+    ixc.add_argument("--expand", action="store_true",
+                     help="Print the full card instead of the one-line compact form")
+    ixc_sub = ixc.add_subparsers(dest="cards_subcommand")
+    ixcp = ixc_sub.add_parser("push", help="Write or replace an item's source card")
+    ixcp.add_argument("key", help="Item key or PDF attachment key")
+    ixcp.add_argument("--from", dest="from_file", default="-", metavar="FILE",
+                      help="Card JSON file; - reads stdin (default)")
     # A leaf parser is not wrapped by add_parser above, so it gets --json here.
     # SUPPRESS keeps a `--json` given before the command from being undone.
-    for leaf in (ixp, ixs, ixq):
+    for leaf in (ixp, ixs, ixq, ixc, ixcp):
         leaf.add_argument("--json", action="store_true", dest="json_out",
                           default=argparse.SUPPRESS,
                           help="Emit a JSON envelope instead of markdown")
@@ -2114,10 +2232,13 @@ Commands returning structured data
   index show            data.index -- the parsed index, or one section of it
                         with --grep, --fields or --limit also data.filter{} -- terms, matched{}, truncated{}
   index search          data.items[] -- hits per indexed item, most facts first; data.no_hits[], data.skipped[]
+  index cards           data.cards[] -- compact records (full card plus note_key with
+                        --expand), data.count, data.terms
+  index cards push      data.item_key, data.note_key, data.created, data.updated, data.trashed
 
 grep, sections, tables and index also fail with a code a caller can branch on:
 no_pdf_attachment, bad_regex, bad_pages, no_index, index_exists, invalid_index,
-bad_grep. Index search lists an item that it cannot read in data.skipped[],
+invalid_card, bad_grep. Index search lists an item that it cannot read in data.skipped[],
 with the code no_index, invalid_index or error.
 
 Every other command returns {"text": "<the markdown it would have

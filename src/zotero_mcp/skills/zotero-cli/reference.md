@@ -8,8 +8,9 @@ Every command also accepts `--json` (machine-readable envelope on stdout) and
 each first-level command, so they may precede the command name or follow it,
 but not follow a sub-command: `get --json metadata KEY` parses and
 `get metadata --json KEY` does not. The exceptions are `index push`,
-`index show` and `index search`, which also take `--json` after the
-sub-command. Run `zotero-cli --json-schema` for the output contract.
+`index show`, `index search`, `index cards` and `index cards push`, which
+also take `--json` after the sub-command. Run `zotero-cli --json-schema`
+for the output contract.
 
 
 ## `config`
@@ -184,6 +185,17 @@ sub-command. Run `zotero-cli --json-schema` for the output contract.
  - `--limit` -- default `10` -- Most entries of each kind to return for each item. 0 means no cap.
  - `--max-items` -- default `10` -- Most items with hits to return, most facts first. 0 means no cap.
  - `--regex` -- Treat each TERM as one regex
+
+### `index cards`
+
+ - `--grep` -- Only cards that match TERM[,TERM] in any field. Repeat the flag to add terms.
+ - `--regex` -- Treat each --grep value as one regex
+ - `--expand` -- Print the full card instead of the one-line compact form
+
+#### `index cards push`
+
+ - `<key>` -- Item key or PDF attachment key
+ - `--from` -- default `-` -- Card JSON file; - reads stdin (default)
 
 ## `notes (alias: n)`
 
