@@ -18,7 +18,7 @@ Read this first in a new Claude Code session. Then run the three checks in secti
 
 ## 2. Open scope
 
-1. Commit the skill on a branch and open a PR. The file is new and untracked. No allowlist edit is needed.
+1. The skills live in github.com/emmettrm-parallax/zotero-skills since 2026-10-01. Commit a skill change there, not in Meridian.
 2. Decide on the three `status/` flags: two Boyce duplicates, three misfiled items under `compressors`, one web page copy with no PDF. An agent must not merge or delete. The user decides.
 3. Build the semantic index if search by meaning is wanted: `zotero-mcp update-db`. Needs the `[semantic]` extra. Without it, semantic mode returns nothing.
 4. File the sourcebook artifacts into Zotero by DOI with the controlled tags. The shaft-seal, bleed, and diffuser sourcebooks hold about 400 sources. The user has not said yes yet.
@@ -46,15 +46,15 @@ Expected: `ok: true`, three seal items, and `Write mode: local`.
 - A 401 on a write means the copies drifted. Run `zotero-mcp authorize-local` and click Always Allow. That rebuilds both.
 - The MCP tool schemas cost about 12k tokens on every request. Use `zotero-cli` from a shell when possible.
 - One local write carries at most 50 items. Split a bigger plan.
-- The tag vocabulary is in the Meridian skill. A new tag needs a table line there first.
+- The tag vocabulary is in the `zotero-research` skill of the zotero-skills repo. A new tag needs a table line there first.
 
 ## 5. Added 2026-09-29: source-index tools
 
-Branch `feat/source-index-tools` is checked out here (local, not pushed). It adds `zotero-cli grep`, `sections`, `index push` and `index show`. The Meridian skills `source-index` and `zotero-research` use them. Three items carry index notes and the tag `status/indexed`: 3CKPN9EK, QSEELLWH, EBC5ZSRK. Worktrees `a0` to `a3` under `~/Github/zotero-mcp-wt/` hold the merged task branches. Open scope and audit numbers: Meridian memory note `source-index-pipeline-built`.
+Branch `feat/source-index-tools` is checked out here (local, not pushed). It adds `zotero-cli grep`, `sections`, `index push` and `index show`. The skills `source-index` and `zotero-research` (zotero-skills repo) use them. Three items carry index notes and the tag `status/indexed`: 3CKPN9EK, QSEELLWH, EBC5ZSRK. Worktrees `a0` to `a3` under `~/Github/zotero-mcp-wt/` hold the merged task branches. Open scope and audit numbers: Meridian memory note `source-index-pipeline-built`.
 
 ## 6. Added 2026-09-30: round 2
 
-Branch `feat/source-index-tools` is pushed to `fork` at ed70464. New commands: `zotero-cli tables KEY --pages RANGE --strategy lines|text` and `index show KEY --pages RANGE`. New error code: `bad_pages`. The three items carry the b2 indexes with 7, 6 and 13 note parts. Worktrees `f1` to `f3` under `~/Github/zotero-mcp-wt/` hold the merged round-2 branches. Remove `a0` to `a3` and `f1` to `f3` after the branch merges. Audit numbers and open items: Meridian memory note `source-index-pipeline-built`.
+Branch `feat/source-index-tools` is pushed to `fork` at ed70464. New commands: `zotero-cli tables KEY --pages RANGE --strategy lines|text` and `index show KEY --pages RANGE`. New error code: `bad_pages`. The three items carry the b2 indexes with 7, 6 and 13 note parts. Worktrees `f1` to `f3` under `~/Github/zotero-mcp-wt/` hold the merged round-2 branches. Remove `a0` to `a3` and `f1` to `f3` after the branch merges. Audit numbers and open items: the memory note `source-index-pipeline-built` of the Meridian Claude project.
 
 ## 7. Added 2026-09-30: round 3
 
@@ -82,4 +82,8 @@ Branch `feat/source-index-tools` holds the round-5 merges at 3e9fd96. Suite: 447
 New: `split_panels(page, bbox, mask_text=False, scale=1.5)` in `pdf_layout.py` finds plot panels inside a box by whitespace cuts. Pure Python plus pymupdf. Calibrated on three library PDFs, see `tests/test_panel_split.py`.
 New: `sections --inventory` lists `plots_on_page` per row: `{"page", "plots", "source", "scanned", "panel_rects"}`. The count comes from drawing boxes, from table boxes without a table label, and from grid cells in image boxes. On a scan the split runs on the whole page. The Meridian `split_units.py` reads it.
 Known gap: a page with `/Rotate` 90 or 270 and a full-page image does not get the `scanned` flag. The layout frame is unrotated. 301 of 12,123 library pages.
-Re-test: 8T22IS9X and CWPBGQLT were built again with the new reader prompts and the new split. Both pass the audit gate at 0.1 percent misses. Audit numbers and open items: Meridian memory note `source-index-pipeline-built`.
+Re-test: 8T22IS9X and CWPBGQLT were built again with the new reader prompts and the new split. Both pass the audit gate at 0.1 percent misses. Audit numbers and open items: the memory note `source-index-pipeline-built` of the Meridian Claude project.
+
+## 10. Round 6, 2026-10-01 to 2026-10-02
+
+The skills moved to github.com/emmettrm-parallax/zotero-skills (private). `~/.claude/skills/source-index` and `~/.claude/skills/zotero-research` are symlinks into that repo. Meridian PR 889 is closed. The repo holds `build.py`, a 16-subcommand build driver with a fake CLI for its tests, and two new reader rules (printed symbols only, no point values from a colour map). Round 6 rebuilt the ten papers that failed the gate in round 4. All ten pass now, four after a correction pass on the auditor wrong list and a fresh audit of the touched units. Two books got a first index: LH7JJBKY (72 units, 12,427 facts) passes at 0.1 percent misses and 0.7 percent wrong. FVN8JNRY (97 units, 9,367 facts) failed on wrong entries at 1.2 percent, carries the correction and keeps `status/index-failed-gate` because no re-audit ran. The four other books are not built. Next: a `build.py correct` subcommand for the auditor wrong list, a re-audit of FVN8JNRY, and the four books when the budget allows.
